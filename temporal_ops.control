@@ -1,0 +1,3 @@
+comment = 'Implement temporal joins and other relational operators'
+default_version = '1.0.0'
+relocatable = true

@@ -1,0 +1,13 @@
+SELECT  a.id, b.id, j.valid_at
+FROM    a
+JOIN    b
+ON      a.id = b.id
+AND     a.valid_at && b.valid_at
+JOIN LATERAL  temporal_semijoin(a.valid_at, b.valid_at) AS j(valid_at)
+ON      true;
+ id | id | valid_at 
+----+----+----------
+  1 |  1 | [5,10)
+  1 |  1 | [15,20)
+(2 rows)
+
