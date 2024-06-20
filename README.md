@@ -17,7 +17,7 @@ But in any case, implementing things in the existing executor nodes does seem li
 
 There is a syntax problem though: what is the resulting range called? How do you `SELECT` it?
 In semi/anti joins, you want not the range from table `a` and not the range from table `b`, but a result of combining them somehow.
-For semijoin you want `a.valid_at * b.valid_at`; for antijoin, `a.valid_at - range_agg(b.valid_at)`.
+For semijoin you want `a.valid_at * range_agg(b.valid_at)`; for antijoin, `a.valid_at - range_agg(b.valid_at)`.
 But in SQL, those joins have no syntax of their own.
 You achieve them with a contortion: a predicate (`EXISTS` or `NOT EXISTS`) containing a ["correlated sub-query"](https://www.geeksforgeeks.org/sql-correlated-subqueries/).
 So the new resulting range is never given a name.
@@ -49,33 +49,30 @@ And `a antijoin b` gives:
 
 How do you `SELECT j.valid_at`? The correlated sub-query doesn't have a name, and all you produce from `EXISTS` is true or false.
 
-But can we get what we want with a regular inner/outer join plus a set-returning function (SRF)?
-This works for semijoins:
+But can we get what we want with a regular inner/outer join plus some extra work?
+This works for *some* semijoins:
 
 ```
-SELECT  a.id, b.id, j.valid_at
+SELECT  a.id, b.id, a.valid_at * b.valid_at
 FROM    a
 JOIN    b
 ON      a.id = b.id
 AND     a.valid_at && b.valid_at
-JOIN LATERAL temporal_semijoin(a.valid_at, b.valid_at) AS j(valid_at)
-ON      true
+AND     NOT isempty(a.valid_at && b.valid_at);
 ```
 
-In that query, `temporal_semijoin` just returns `a * b`.
+If the left-hand side is a temporal FK referencing the right-hand side,
+then that works, because we know the right-side records are (temporally) unique for each left-side record,
+so they can't produce overlapping duplicates.
 
-For antijoins things are trickier, because we need to see all the matching `b` records
-before emitting a result. This feels like a job for `range_agg`.
-And I guess an outer join will help here, because we want to see everything from `a` then drop some of it.
-And then if the original inputs are ranges we need to `UNNEST` the resulting multirange.
-(We could skip this last part if the inputs were multiranges.)
-If there was no match from `b` at all, then we should just preserve `a`'s range.
+But if the FK points the other way, or if we're not doing an equijoin (e.g. if we're joining by `employee1.hired_at > employee2.hired_at`),
+then we need some extra work to avoid duplicates:
 
 ```
-SELECT  a.id, j.id, COALESCE(j.valid_at, a.valid_at) AS valid_at
+SELECT  a.id, j.id, j.valid_at
 FROM    a
-LEFT JOIN LATERAL (
-  SELECT  b.id, UNNEST(multirange(a.valid_at) - range_agg(b.valid_at)) AS valid_at
+JOIN LATERAL (
+  SELECT  b.id, UNNEST(multirange(a.valid_at) * range_agg(b.valid_at)) AS valid_at
   FROM    b
   WHERE   a.id = b.id
   AND     a.valid_at && b.valid_at
@@ -83,7 +80,42 @@ LEFT JOIN LATERAL (
 ) AS j ON true;
 ```
 
-I don't see a nicer way to wrap this up in a function yet.
+In other words, combine all the `b` ranges for each id into a multirange, find its intersection with `a`, then unnest to get back to ranges.
+
+Our antijoin approach is similar.
+We need to see all the matching `b` records before emitting a result,
+so again this is a job for `range_agg`.
+We need an outer join of course, because the point is to find records with no match.
+Then instead of intersection we want `a.valid_at - range_agg(b.valid_at)`:
+
+```
+SELECT  a.id, j.id,
+        UNNEST(CASE WHEN j.valid_at IS NULL THEN multirange(a.valid_at)
+                    ELSE multirange(a.valid_at) - j.valid_at END) AS valid_at
+FROM    a
+LEFT JOIN LATERAL ( 
+  SELECT  b.id, range_agg(b.valid_at) AS valid_at
+  FROM    b
+  WHERE   a.id = b.id
+  AND     a.valid_at && b.valid_at
+  GROUP BY b.id
+) AS j ON true
+WHERE   NOT isempty(a.valid_at);
+```
+
+If no `b` matches were found, we subtract nothing, so we just keep `a.valid_at`.
+Here I originally wanted to say `multirange(a.valid_at) - COALESCE(j.valid_at, 'empty')`,
+but Postgres needs a specific type for `empty`, so using `CASE` keeps our SQL type-agnostic.
+
+And if `a.valid_at` started out empty, we should just throw it away.
+If there is a temporal PK on that column, empty should be forbidden anyway.
+
+Neither of these operations are easy to wrap up in a function.
+Perhaps you could take the table names and column names and generate SQL.
+It could introspect for FKs and use the simpler query above when possible.
+But a function is opaque to the optimizer,
+so you wouldn't get filtering from other predicates in the query.
+For now I'm happy with just documenting how to do it yourself.
 
 Many thanks to Boris and Hettie for inspiring this work!
 Most of the ideas are their own; I just wrote the semijoin+antijoin SQL.
