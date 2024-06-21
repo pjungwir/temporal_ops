@@ -53,7 +53,7 @@ But can we get what we want with a regular inner/outer join plus some extra work
 This works for *some* semijoins:
 
 ```
-SELECT  a.id, b.id, a.valid_at * b.valid_at
+SELECT  a.id, a.valid_at * b.valid_at
 FROM    a
 JOIN    b
 ON      a.id = b.id
@@ -69,15 +69,14 @@ But if the FK points the other way, or if we're not doing an equijoin (e.g. if w
 then we need some extra work to avoid duplicates:
 
 ```
-SELECT  a.id, j.id, j.valid_at
+SELECT  a.id, UNNEST(multirange(a.valid_at) * j.valid_at) AS valid_at
 FROM    a
-JOIN LATERAL (
-  SELECT  b.id, UNNEST(multirange(a.valid_at) * range_agg(b.valid_at)) AS valid_at
+JOIN (
+  SELECT  b.id, range_agg(b.valid_at) AS valid_at
   FROM    b
-  WHERE   a.id = b.id
-  AND     a.valid_at && b.valid_at
   GROUP BY b.id
-) AS j ON true;
+) AS j
+ON a.id = j.id AND a.valid_at && j.valid_at;
 ```
 
 In other words, combine all the `b` ranges for each id into a multirange, find its intersection with `a`, then unnest to get back to ranges.
@@ -89,17 +88,16 @@ We need an outer join of course, because the point is to find records with no ma
 Then instead of intersection we want `a.valid_at - range_agg(b.valid_at)`:
 
 ```
-SELECT  a.id, j.id,
+SELECT  a.id,
         UNNEST(CASE WHEN j.valid_at IS NULL THEN multirange(a.valid_at)
                     ELSE multirange(a.valid_at) - j.valid_at END) AS valid_at
 FROM    a
-LEFT JOIN LATERAL ( 
+LEFT JOIN (
   SELECT  b.id, range_agg(b.valid_at) AS valid_at
   FROM    b
-  WHERE   a.id = b.id
-  AND     a.valid_at && b.valid_at
   GROUP BY b.id
-) AS j ON true
+) AS j
+ON a.id = j.id AND a.valid_at && j.valid_at
 WHERE   NOT isempty(a.valid_at);
 ```
 
@@ -122,6 +120,5 @@ Most of the ideas are their own; I just wrote the semijoin+antijoin SQL.
 
 # TODO
 
-- Make sure these give sane query plans for large tables.
 - Temporal outer joins.
 
