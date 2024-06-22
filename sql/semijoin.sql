@@ -17,3 +17,6 @@ ON      a.id = b.id
 AND     a.valid_at && b.valid_at
 AND     NOT isempty(a.valid_at * b.valid_at)
 WHERE   a.id IS DISTINCT FROM 6;
+
+SELECT	*
+FROM		temporal_semijoin('a', 'id', 'valid_at', 'b', 'id', 'valid_at') AS t(id int, valid_at int4range);

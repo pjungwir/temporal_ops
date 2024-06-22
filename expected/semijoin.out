@@ -31,3 +31,13 @@ WHERE   a.id IS DISTINCT FROM 6;
   9 | [1,20)
 (3 rows)
 
+SELECT	*
+FROM		temporal_semijoin('a', 'id', 'valid_at', 'b', 'id', 'valid_at') AS t(id int, valid_at int4range);
+ id | valid_at 
+----+----------
+  1 | [5,10)
+  1 | [15,20)
+  6 | [5,12)
+  9 | [1,20)
+(4 rows)
+
