@@ -1,3 +1,4 @@
+MODULES = temporal_ops
 EXTENSION = temporal_ops
 EXTENSION_VERSION = 1.0.0
 DATA = $(EXTENSION)--$(EXTENSION_VERSION).sql
