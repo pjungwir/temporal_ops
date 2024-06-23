@@ -118,7 +118,46 @@ For now I'm happy with just documenting how to do it yourself.
 Many thanks to Boris and Hettie for inspiring this work!
 Most of the ideas are their own; I just wrote the semijoin+antijoin SQL.
 
+# Performance
+
+See [bench.sql](bench.sql) for some performance experiments.
+Highlights here:
+
+My first version of semijoin/antijoin used `LATERAL` joins, which was a lot slower.
+I was worried that doing `GROUP BY` in a sub-query with no filters would make Postgres process the whole table,
+even when the top-level is doing something like `WHERE a.id = 10`.
+Turns out Postgres is smart enough to push that condition into the subquery.
+I should have trusted the planner!
+
+I also looked at encapsulating these queries inside a Set-Returning Function (SRF).
+My worry was that functions are opaque to the planner,
+so that Postgres would no longer push down conditions like that.
+If it's PLPGSQL, that that's true.
+
+But if the function is SQL (thus with hardcoded table & column names),
+then Postgres can [inline it](https://wiki.postgresql.org/wiki/Inlining_of_SQL_functions),
+essentially turning it into a subquery,
+and then the same optimizations happen.
+
+It'd be cool if we could get the same inlining from a function that dynamically generates the SQL.
+When you define a function, you can attach a [`SUPPORT` function](https://www.postgresql.org/docs/current/xfunc-optimization.html)
+and one thing it can do is replace the function Node with a different Node tree (`SupportRequestSimplify`).
+That means you can write functions that act like macros!
+I [tried](https://github.com/pjungwir/temporal_ops/tree/inlined) using that to return a `Query`, but I got `ERROR:  unrecognized node type: 58`.
+This feature is really intended for constant-substitution,
+so I don't think anyone has considered using it in place of a SRF.
+It doesn't seem hard to patch Postgres to allow that though.
+(Probably I would need to implement this in `inline_set_returning_function`,
+not in `simplify_function`, because `RangeTblEntry.functions` needs to be a `List` of `RangeTblFunction`s.
+And then maybe it should be a new kind of Support Request, e.g. `SupportRequestInlineSRF`,
+so that we call it in the right place.)
+
+
 # TODO
 
 - Temporal outer joins.
+- Temporal aggregates.
+- Temporal `UNION`.
+- Temporal `INTERSECT`.
+- Temporal `EXCEPT`.
 

@@ -15,6 +15,9 @@ test:
 	echo "Run make installcheck to run tests"
 	exit 1
 
+README.html: README.md
+	jq --slurp --raw-input '{"text": "\(.)", "mode": "markdown"}' < README.md | curl --data @- https://api.github.com/markdown > README.html
+
 release:
 	git archive --format zip --prefix=$(EXTENSION)-$(EXTENSION_VERSION)/ --output $(EXTENSION)-$(EXTENSION_VERSION).zip master
 

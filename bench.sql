@@ -334,5 +334,72 @@ and e.id = 10::bigint;
  Execution Time: 0.137 ms
 (17 rows)
 
+As a plpgsql function, Postgres can't inline:
+
+paul=# CREATE OR REPLACE FUNCTION temporal_semijoin(
+  left_table text,
+  left_id_col text,
+  left_valid_col text,
+  right_table text,
+  right_id_col text,
+  right_valid_col text
+)
+RETURNS SETOF RECORD AS $$
+DECLARE
+  subquery TEXT := 'j';
+BEGIN
+  IF left_table = 'j' OR right_table = 'j' THEN
+    subquery := 'j1';
+    IF left_table = 'j1' OR right_table = 'j1' THEN
+      subquery := 'j2';
+    END IF;
+  END IF;
+  RETURN QUERY EXECUTE format($j$
+    SELECT  %1$I.%2$I, UNNEST(multirange(%1$I.%3$I) * %7$I.%6$I) AS %3$I
+    FROM    %1$I
+    JOIN (
+      SELECT  %4$I.%5$I, range_agg(%4$I.%6$I) AS %6$I
+      FROM    %4$I
+      GROUP BY %4$I.%5$I
+    ) AS %7$I
+    ON %1$I.%2$I = %7$I.%5$I AND %1$I.%3$I && %7$I.%6$I;
+  $j$, left_table, left_id_col, left_valid_col, right_table, right_id_col, right_valid_col, subquery);
+END;
+$$ STABLE LEAKPROOF PARALLEL SAFE LANGUAGE plpgsql;
+CREATE FUNCTION
+paul=# explain select * from temporal_semijoin('employees', 'id', 'valid_at', 'positions', 'employee_id', 'valid_at') j(id bigint, valid_at daterange) where id = 10::bigint;
+                                QUERY PLAN                                
+--------------------------------------------------------------------------
+ Function Scan on temporal_semijoin j  (cost=0.25..12.75 rows=5 width=40)
+   Filter: (id = '10'::bigint)
+(2 rows)
+
+But as a sql function it can:
+
+CREATE FUNCTION
+Time: 2.110 ms
+paul=# CREATE OR REPLACE FUNCTION temporal_semijoin()
+RETURNS SETOF RECORD AS $$
+  SELECT  e.id, UNNEST(multirange(e.valid_at) * j.valid_at) AS valid_at
+  FROM    employees e
+  JOIN (
+    SELECT  p.employee_id, range_agg(p.valid_at) AS valid_at
+    FROM    positions p
+    GROUP BY p.employee_id
+  ) AS j
+  ON e.id = j.employee_id AND e.valid_at && j.valid_at;
+$$ STABLE LEAKPROOF PARALLEL SAFE LANGUAGE sql;
+CREATE FUNCTION
+paul=# explain select * from temporal_semijoin() j(id bigint, valid_at daterange) where id = 10::bigint;
+                                                       QUERY PLAN                                                       
+------------------------------------------------------------------------------------------------------------------------
+ ProjectSet  (cost=0.56..9.20 rows=100 width=40)
+   ->  Nested Loop  (cost=0.56..8.69 rows=1 width=53)
+         ->  GroupAggregate  (cost=0.28..4.37 rows=1 width=40)
+               ->  Index Only Scan using idx_positions_on_employee_id on positions p  (cost=0.28..4.35 rows=4 width=21)
+                     Index Cond: (employee_id = '10'::bigint)
+         ->  Index Only Scan using employees_pkey on employees e  (cost=0.28..4.30 rows=1 width=21)
+               Index Cond: ((id = '10'::bigint) AND (valid_at && (range_agg(p.valid_at))))
+(7 rows)
 
 */
