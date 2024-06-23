@@ -3,6 +3,11 @@
 -- complain if script is sourced in psql, rather than via CREATE EXTENSION
 \echo Use "CREATE EXTENSION temporal_ops" to load this file \quit
 
+CREATE OR REPLACE FUNCTION temporal_semijoin_support(INTERNAL)
+RETURNS INTERNAL
+AS 'temporal_ops', 'temporal_semijoin_support'
+LANGUAGE C;
+
 /*
  * temporal_semijoin - semijoins left table+columns to right table+columns
  *
@@ -64,4 +69,4 @@ BEGIN
     ON %1$I.%2$I = %7$I.%5$I AND %1$I.%3$I && %7$I.%6$I;
   $j$, left_table, left_id_col, left_valid_col, right_table, right_id_col, right_valid_col, subquery);
 END;
-$$ STABLE LEAKPROOF STRICT PARALLEL SAFE LANGUAGE plpgsql;
+$$ STABLE LEAKPROOF PARALLEL SAFE SUPPORT temporal_semijoin_support LANGUAGE plpgsql;

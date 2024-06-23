@@ -1,5 +1,9 @@
+*.o
+/temporal_ops.so
 /results/
 /regression.diffs
 /regression.out
 /NOTES
 /README.html
+/.deps
+/*.dylib
