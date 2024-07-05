@@ -1,0 +1,168 @@
+
+==================================
+           full              
+==================================
+
+           pj1              
+------------------------------
+pgbench (18devel)
+transaction type: full-pj1.sql
+scaling factor: 1
+query mode: simple
+number of clients: 1
+number of threads: 1
+maximum number of tries: 1
+number of transactions per client: 100
+number of transactions actually processed: 100/100
+number of failed transactions: 0 (0.000%)
+latency average = 424.648 ms
+initial connection time = 1.654 ms
+tps = 2.354891 (without initial connection time)
+
+           pj2              
+------------------------------
+pgbench (18devel)
+transaction type: full-pj2.sql
+scaling factor: 1
+query mode: simple
+number of clients: 1
+number of threads: 1
+maximum number of tries: 1
+number of transactions per client: 100
+number of transactions actually processed: 100/100
+number of failed transactions: 0 (0.000%)
+latency average = 707.530 ms
+initial connection time = 1.575 ms
+tps = 1.413367 (without initial connection time)
+
+           boris2              
+------------------------------
+pgbench (18devel)
+transaction type: full-boris2.sql
+scaling factor: 1
+query mode: simple
+number of clients: 1
+number of threads: 1
+maximum number of tries: 1
+number of transactions per client: 100
+number of transactions actually processed: 100/100
+number of failed transactions: 0 (0.000%)
+latency average = 679.083 ms
+initial connection time = 1.931 ms
+tps = 1.472573 (without initial connection time)
+
+           boris3              
+------------------------------
+pgbench (18devel)
+transaction type: full-boris3.sql
+scaling factor: 1
+query mode: simple
+number of clients: 1
+number of threads: 1
+maximum number of tries: 1
+number of transactions per client: 100
+number of transactions actually processed: 100/100
+number of failed transactions: 0 (0.000%)
+latency average = 913.535 ms
+initial connection time = 1.668 ms
+tps = 1.094649 (without initial connection time)
+
+           boris3b              
+------------------------------
+pgbench (18devel)
+transaction type: full-boris3b.sql
+scaling factor: 1
+query mode: simple
+number of clients: 1
+number of threads: 1
+maximum number of tries: 1
+number of transactions per client: 100
+number of transactions actually processed: 100/100
+number of failed transactions: 0 (0.000%)
+latency average = 782.993 ms
+initial connection time = 1.681 ms
+tps = 1.277151 (without initial connection time)
+
+==================================
+           one              
+==================================
+
+           pj1              
+------------------------------
+pgbench (18devel)
+transaction type: one-pj1.sql
+scaling factor: 1
+query mode: simple
+number of clients: 1
+number of threads: 1
+maximum number of tries: 1
+number of transactions per client: 100
+number of transactions actually processed: 100/100
+number of failed transactions: 0 (0.000%)
+latency average = 102.483 ms
+initial connection time = 1.641 ms
+tps = 9.757714 (without initial connection time)
+
+           pj2              
+------------------------------
+pgbench (18devel)
+transaction type: one-pj2.sql
+scaling factor: 1
+query mode: simple
+number of clients: 1
+number of threads: 1
+maximum number of tries: 1
+number of transactions per client: 100
+number of transactions actually processed: 100/100
+number of failed transactions: 0 (0.000%)
+latency average = 13.637 ms
+initial connection time = 1.691 ms
+tps = 73.330503 (without initial connection time)
+
+           boris2              
+------------------------------
+pgbench (18devel)
+transaction type: one-boris2.sql
+scaling factor: 1
+query mode: simple
+number of clients: 1
+number of threads: 1
+maximum number of tries: 1
+number of transactions per client: 100
+number of transactions actually processed: 100/100
+number of failed transactions: 0 (0.000%)
+latency average = 104.813 ms
+initial connection time = 1.627 ms
+tps = 9.540839 (without initial connection time)
+
+           boris3              
+------------------------------
+pgbench (18devel)
+transaction type: one-boris3.sql
+scaling factor: 1
+query mode: simple
+number of clients: 1
+number of threads: 1
+maximum number of tries: 1
+number of transactions per client: 100
+number of transactions actually processed: 100/100
+number of failed transactions: 0 (0.000%)
+latency average = 14.395 ms
+initial connection time = 1.716 ms
+tps = 69.469820 (without initial connection time)
+
+           boris3b              
+------------------------------
+pgbench (18devel)
+transaction type: one-boris3b.sql
+scaling factor: 1
+query mode: simple
+number of clients: 1
+number of threads: 1
+maximum number of tries: 1
+number of transactions per client: 100
+number of transactions actually processed: 100/100
+number of failed transactions: 0 (0.000%)
+latency average = 14.108 ms
+initial connection time = 1.633 ms
+tps = 70.882724 (without initial connection time)
