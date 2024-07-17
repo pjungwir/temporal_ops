@@ -1,0 +1,15 @@
+-- Just a basic inner join
+SELECT  a.id, b.id, a.valid_at * b.valid_at AS valid_at
+FROM    a
+JOIN    b
+ON      a.id = b.id AND a.valid_at && b.valid_at
+ORDER BY a.id, b.id, valid_at
+ id | id | valid_at 
+----+----+----------
+  1 |  1 | [5,10)
+  1 |  1 | [15,20)
+  6 |  6 | [5,10)
+  6 |  6 | [5,12)
+  9 |  9 | [1,20)
+(5 rows)
+

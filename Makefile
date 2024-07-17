@@ -3,8 +3,10 @@ EXTENSION_VERSION = 1.0.0
 DATA = $(EXTENSION)--$(EXTENSION_VERSION).sql
 
 REGRESS = setup \
+					join \
 					semijoin \
-					antijoin
+					antijoin \
+					outer_join
 
 PG_CONFIG = pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)
