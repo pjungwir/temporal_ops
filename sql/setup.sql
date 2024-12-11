@@ -29,3 +29,14 @@ INSERT INTO b VALUES
   (8, '[5,10)'),
   (9, '[1,20)');
 
+-- Test with duplicate inputs:
+
+CREATE VIEW a2 AS
+  SELECT * FROM a
+  UNION ALL
+  SELECT * FROM a;
+
+CREATE VIEW b2 AS
+  SELECT * FROM b
+  UNION ALL
+  SELECT * FROM b;
