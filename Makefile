@@ -6,7 +6,10 @@ REGRESS = setup \
 					join \
 					semijoin \
 					antijoin \
-					outer_join
+					outer_join \
+					union \
+					except \
+					intersect
 
 PG_CONFIG = pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)
