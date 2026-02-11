@@ -3,28 +3,31 @@
 In a temporal database, inner joins are easy (even without SQL:2011), but what about outer joins?
 What about semijoins and antijoins?
 What about aggregates?
-What about `UNION`, `INTERSECT`, `EXCEPT`?
+What about setops (`UNION`, `INTERSECT`, and `EXCEPT`)?
 This repo gives SQL to implement these temporal operations in a Postgres database.
 (It is a work in progress, so not all operations are implemented yet. See below for progress.)
 
 What makes these operations harder for temporal tables?
 Each operation needs to compute the correct new application time.
+
 Following [Date's model](https://illuminatedcomputing.com/posts/2017/12/temporal-databases-bibliography/), a temporal table could be replaced by a traditional table that just has a separate row for every second/millisecond/whatever. The application-time interval is just an optimization to avoid having a silly number of rows.
 All operations should give an interval which matches the rows you'd get from that idealized table.
-Nearly all of these operations are *binary*: they combine two relations. So the result's application-time may not exactly match either input, but should be a function of them.
+Nearly all of these operations are *binary*: they combine two relations.
+So the result's application-time may not exactly match either input, but should be a function of them.
+
+And the result set should include the original application-times of the joined tables, too.
+That raises the question of what to call all the result set columns, since the inputs might all be named `valid_at`.
 
 [Research by Dignös, Böhlen, and Gamper](https://www.zora.uzh.ch/id/eprint/62963/1/p433-dignos.pdf) gives a way to implement a temporal version of every relational operator. But their approach depends on new syntax as well as changes to the planner and executor. I would love to have native support for this in Postgres someday, but what does a working programmer do now? We need a SQL implementation for these operations.
+
 As far as I know no one has published SQL for these things before.
 It's not covered in Snodgass or either of Johnston's books. Date has some queries like this (for example "Q6" on page 297 is a semijoin), but his implementations are not in SQL and are hard to apply to practical databases. Boris Novikov recently published [an article showing temporal aggregates](https://www.red-gate.com/simple-talk/databases/postgresql/making-temporal-databases-work-part-2-computing-aggregates-across-temporal-versions/), which is a great step forward. I hope to incorporate his ideas here and add on to them.
 
-This repo is structured like a Postgres extension you could install, but there is nothing in it.
-I'm just documenting the shape of queries you'd write yourself.
-Having the extension infrastructure is convenient for writing tests,
-but really I'm hoping I can eventually wrap these queries in functions to encapsulate things.
-Today Postgres isn't able to inline plpgsql functions, so you'll get worse performance when combining them with the rest of your query.
-For example a semijoin function would compute its result for your entire table, even when you want just one record.
-I'm working on a [patch](https://commitfest.postgresql.org/48/5083/) to allow inlining plpgsql functions, but it's pretty new.
-The [inlined branch here](https://github.com/pjungwir/temporal_ops/tree/inlined) shows how I'd use that proposed functionality.
+This repo provides a Postgres extension to provide temporal relational operators.
+Those operators are implemented as set-returning functions, e.g. `temporal_semijoin`.
+You tell the function the table and column names to use, and they general a subquery to do the temporal operation.
+
+By default Postgres cannot inline a non-SQL function, but [as of v19](https://commitfest.postgresql.org/48/5083/) it is possible to give a [support function](TODO: link to the docs) that converts the previously-opaque function call into an equivalent query plan. Then the planner can inline the subquery, enabling optimizations like qual pushdown. This extension provides such support functions wherever possible. The tests also cover hand-written SQL implementations, although calling the functions better expresses intent and is just as fast.
 
 ## Inner Joins
 
