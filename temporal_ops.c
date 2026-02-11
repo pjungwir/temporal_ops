@@ -20,6 +20,9 @@ PG_MODULE_MAGIC;
 Datum temporal_semijoin_support(PG_FUNCTION_ARGS);
 PG_FUNCTION_INFO_V1(temporal_semijoin_support);
 
+Datum temporal_antijoin_support(PG_FUNCTION_ARGS);
+PG_FUNCTION_INFO_V1(temporal_antijoin_support);
+
 /*
  * quoteOneName --- safely quote a single SQL name
  *
@@ -41,6 +44,90 @@ quoteOneName(char *buffer, const char *name)
     *buffer++ = '"';
     *buffer = '\0';
 }
+
+static bool getarg_cstring(FuncExpr *expr, int n, char **result)
+{
+    Node *node;
+    Const *c;
+
+    node = lfirst(list_nth_cell(expr->args, n));
+    if (!IsA(node, Const))
+    {
+        ereport(WARNING, (errmsg("temporal_semijoin called with non-Const parameters")));
+        return false;
+    }
+
+    c = (Const *) node;
+    if (c->consttype != TEXTOID)
+    {
+        ereport(WARNING, (errmsg("temporal_semijoin called with non-TEXT parameters")));
+        return false;
+    }
+
+    *result = TextDatumGetCString(c->constvalue);
+    return true;
+}
+
+/*
+ * build_query - parse the given SQL and return a Query node.
+ *
+ * sql - the sql to parse
+ * req - the support request object
+ * func_name - the name of the user-facing func (for constructing error messages)
+ */
+static Query *build_query(char *sql, SupportRequestInlineInFrom *req, char *func_name) {
+    FuncExpr *expr = (FuncExpr *) req->rtfunc->funcexpr;
+    SQLFunctionParseInfoPtr pinfo;
+    List *raw_parsetree_list;
+    List *querytree_list;
+	Query *querytree;
+
+    /*
+     * Set up to handle parameters while parsing the function body.
+     * Actually there are no parameters used within the generated SQL.
+     * But pass the temporal_semijoin function anyway.
+     */
+    pinfo = prepare_sql_fn_parse_info(req->proc,
+                                      (Node *) expr,
+                                      expr->inputcollid);
+    /*
+     * Parse, analyze, and rewrite (unlike inline_function(), we can't
+     * skip rewriting here).  We can fail as soon as we find more than one
+     * query, though.
+     */
+    raw_parsetree_list = pg_parse_query(sql);
+    if (list_length(raw_parsetree_list) != 1)
+    {
+        ereport(WARNING, (errmsg("%s parsed to more than one node", func_name)));
+        return NULL;
+    }
+
+	/* Analyze the parse tree as if it were a SQL-language body. */
+    querytree_list = pg_analyze_and_rewrite_withcb(
+            linitial(raw_parsetree_list),
+            sql,
+            (ParserSetupHook) sql_fn_parser_setup,
+            pinfo, NULL);
+    if (list_length(querytree_list) != 1)
+    {
+        ereport(WARNING, (errmsg("%s parsed to more than one node", func_name)));
+        return NULL;
+    }
+    querytree = linitial(querytree_list);
+
+    if (!IsA(querytree, Query))
+    {
+        ereport(WARNING,
+                 (errmsg("%s didn't parse to a Query", func_name),
+                 errdetail("Got this instead: %s", nodeToString(querytree))));
+        return NULL;
+    }
+
+    /* We got a Query, so return it for inlining. */
+
+    return querytree;
+}
+
 
 /*
  * temporal_semijoin_sql - build SQL for semijoin query
@@ -110,46 +197,14 @@ temporal_semijoin_sql(
     *result = q.data;
 }
 
-static bool getarg_cstring(FuncExpr *expr, int n, char **result)
-{
-    Node *node;
-    Const *c;
-
-    node = lfirst(list_nth_cell(expr->args, n));
-    if (!IsA(node, Const))
-    {
-        ereport(WARNING, (errmsg("temporal_semijoin called with non-Const parameters")));
-        return false;
-    }
-
-    c = (Const *) node;
-    if (c->consttype != TEXTOID)
-    {
-        ereport(WARNING, (errmsg("temporal_semijoin called with non-TEXT parameters")));
-        return false;
-    }
-
-    *result = TextDatumGetCString(c->constvalue);
-    return true;
-}
-
 /*
  * Inline the function call.
  *
  * Postgres does this automatically for SRF SQL functions
  * (provided they qualify), but since temporal_semijoin
- * generates its SQL from its parameters, it must be PLPGSQL instead.
- * Still we can use inline_set_returning_function
- * from optimizer/util/clauses.c for guidance.
- * We want to return a Query node.
- *
- * XXX: Alas, Postgres doesn't know what to do with a Query node in this context.
- * It needs to be a RangeTblFunction.
- *
- * What we should do instead is add a new kind of SupportRequest that return a SQL string,
- * and then we inline that.
- * That way you can inline plpgsql functions that generate a SELECT from their (necessarily constant) arguments.
- * Call it SupportRequestInlineInFrom
+ * generates its SQL from its parameters, it must be PL/pgSQL instead.
+ * As of v19 we can use SupportRequestInlineInFrom to return a Query node,
+ * so that Postgres can inline it into the outer query.
  */
 Datum
 temporal_semijoin_support(PG_FUNCTION_ARGS)
@@ -157,7 +212,6 @@ temporal_semijoin_support(PG_FUNCTION_ARGS)
     Node *rawreq = (Node *) PG_GETARG_POINTER(0);
     SupportRequestInlineInFrom *req;
     FuncExpr *expr;
-    SQLFunctionParseInfoPtr pinfo;
     char *left_table;
     char *left_id_col;
     char *left_valid_col;
@@ -165,8 +219,6 @@ temporal_semijoin_support(PG_FUNCTION_ARGS)
     char *right_id_col;
     char *right_valid_col;
     char *sql;
-    List *raw_parsetree_list;
-    List *querytree_list;
     Query *querytree;
 
     /* We only handle InlineInFrom support requests. */
@@ -214,48 +266,7 @@ temporal_semijoin_support(PG_FUNCTION_ARGS)
             right_valid_col,
             &sql);
 
-    /*
-     * Set up to handle parameters while parsing the function body.
-     * Actually there are no parameters used within the generated SQL.
-     * But pass the temporal_semijoin function anyway.
-     */
-    pinfo = prepare_sql_fn_parse_info(req->proc,
-                                      (Node *) expr,
-                                      expr->inputcollid);
-    /*
-     * Parse, analyze, and rewrite (unlike inline_function(), we can't
-     * skip rewriting here).  We can fail as soon as we find more than one
-     * query, though.
-     */
-    raw_parsetree_list = pg_parse_query(sql);
-    if (list_length(raw_parsetree_list) != 1)
-    {
-        ereport(WARNING, (errmsg("temporal_semijoin parsed to more than one node")));
-        PG_RETURN_POINTER(NULL);
-    }
+	querytree = build_query(sql, req, "temporal_semijoin");
 
-	/* Analyze the parse tree as if it were a SQL-language body. */
-    querytree_list = pg_analyze_and_rewrite_withcb(
-            linitial(raw_parsetree_list),
-            sql,
-            (ParserSetupHook) sql_fn_parser_setup,
-            pinfo, NULL);
-    if (list_length(querytree_list) != 1)
-    {
-        ereport(WARNING, (errmsg("temporal_semijoin parsed to more than one node")));
-        PG_RETURN_POINTER(NULL);
-    }
-    querytree = linitial(querytree_list);
-
-    if (!IsA(querytree, Query))
-    {
-        ereport(WARNING,
-                 (errmsg("temporal_semijoin didn't parse to a Query"),
-                 errdetail("Got this instead: %s", nodeToString(querytree))));
-        PG_RETURN_POINTER(NULL);
-    }
-
-    /* We got a Query, so return it for inlining. */
-
-    PG_RETURN_POINTER(querytree);
+	PG_RETURN_POINTER(querytree);
 }
