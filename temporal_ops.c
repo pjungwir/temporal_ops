@@ -80,7 +80,7 @@ static Query *build_query(char *sql, SupportRequestInlineInFrom *req, char *func
     SQLFunctionParseInfoPtr pinfo;
     List *raw_parsetree_list;
     List *querytree_list;
-	Query *querytree;
+    Query *querytree;
 
     /*
      * Set up to handle parameters while parsing the function body.
@@ -102,7 +102,7 @@ static Query *build_query(char *sql, SupportRequestInlineInFrom *req, char *func
         return NULL;
     }
 
-	/* Analyze the parse tree as if it were a SQL-language body. */
+    /* Analyze the parse tree as if it were a SQL-language body. */
     querytree_list = pg_analyze_and_rewrite_withcb(
             linitial(raw_parsetree_list),
             sql,
@@ -230,7 +230,7 @@ temporal_semijoin_support(PG_FUNCTION_ARGS)
 
     if (list_length(expr->args) != 6)
     {
-        ereport(WARNING, (errmsg("temporal_semijoin called with %d args but expected 6", list_length(expr->args)))); 
+        ereport(WARNING, (errmsg("temporal_semijoin called with %d args but expected 6", list_length(expr->args))));
         PG_RETURN_POINTER(NULL);
     }
 
@@ -266,7 +266,7 @@ temporal_semijoin_support(PG_FUNCTION_ARGS)
             right_valid_col,
             &sql);
 
-	querytree = build_query(sql, req, "temporal_semijoin");
+    querytree = build_query(sql, req, "temporal_semijoin");
 
-	PG_RETURN_POINTER(querytree);
+    PG_RETURN_POINTER(querytree);
 }
