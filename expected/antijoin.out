@@ -20,3 +20,41 @@ WHERE   NOT isempty(a.valid_at);
   7 | [5,20)
 (7 rows)
 
+-- Test with our function:
+SELECT	*
+FROM		temporal_antijoin('a', 'id', 'valid_at', 'b', 'id', 'valid_at') AS t(id int, valid_at int4range);
+ id | valid_at 
+----+----------
+  1 | [1,5)
+  1 | [10,15)
+  2 | [1,20)
+  4 | [1,20)
+  6 | [1,5)
+  6 | [12,20)
+  7 | [5,20)
+(7 rows)
+
+-- Qual is pushed down:
+INSERT INTO a SELECT 10, int4range(i, i+1) FROM generate_series(1,1000) s(i);
+CREATE INDEX idx_a_id ON a (id);
+CREATE INDEX idx_b_id ON b (id);
+ANALYZE a, b;
+EXPLAIN SELECT *
+FROM		temporal_antijoin('a', 'id', 'valid_at', 'b', 'id', 'valid_at') AS t(id int, valid_at int4range)
+WHERE   id = 1;
+                                  QUERY PLAN                                   
+-------------------------------------------------------------------------------
+ ProjectSet  (cost=0.15..9.84 rows=100 width=36)
+   ->  Nested Loop Left Join  (cost=0.15..9.32 rows=1 width=49)
+         Join Filter: (a.valid_at && (range_agg(b.valid_at)))
+         ->  Index Scan using idx_a_id on a  (cost=0.15..8.17 rows=1 width=17)
+               Index Cond: (id = 1)
+               Filter: (NOT isempty(valid_at))
+         ->  GroupAggregate  (cost=0.00..1.13 rows=1 width=36)
+               ->  Seq Scan on b  (cost=0.00..1.11 rows=2 width=17)
+                     Filter: (id = 1)
+(9 rows)
+
+DROP INDEX idx_a_id;
+DROP INDEX idx_b_id;
+DELETE FROM a WHERE id = 10;

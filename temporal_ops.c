@@ -45,7 +45,17 @@ quoteOneName(char *buffer, const char *name)
     *buffer = '\0';
 }
 
-static bool getarg_cstring(FuncExpr *expr, int n, char **result)
+/*
+ * Returns an unquoted string in result,
+ * based on the nth parameter to the function in expr.
+ *
+ * It must be a Const node of TEXT type.
+ *
+ * expr - the function call we're supporting
+ * n - the nth arg (0-indexed)
+ * func_name - the name of the user-facing func (for constructing error messages)
+ */
+static bool getarg_cstring(FuncExpr *expr, int n, char *func_name, char **result)
 {
     Node *node;
     Const *c;
@@ -53,14 +63,14 @@ static bool getarg_cstring(FuncExpr *expr, int n, char **result)
     node = lfirst(list_nth_cell(expr->args, n));
     if (!IsA(node, Const))
     {
-        ereport(WARNING, (errmsg("temporal_semijoin called with non-Const parameters")));
+        ereport(WARNING, (errmsg("%s called with non-Const parameters", func_name)));
         return false;
     }
 
     c = (Const *) node;
     if (c->consttype != TEXTOID)
     {
-        ereport(WARNING, (errmsg("temporal_semijoin called with non-TEXT parameters")));
+        ereport(WARNING, (errmsg("%s called with non-TEXT parameters", func_name)));
         return false;
     }
 
@@ -240,17 +250,17 @@ temporal_semijoin_support(PG_FUNCTION_ARGS)
      * Extract strings from the func's arguments.
      * They must all be Const and TEXT.
      */
-    if (!getarg_cstring(expr, 0, &left_table))
+    if (!getarg_cstring(expr, 0, "temporal_semijoin", &left_table))
         PG_RETURN_POINTER(NULL);
-    if (!getarg_cstring(expr, 1, &left_id_col))
+    if (!getarg_cstring(expr, 1, "temporal_semijoin", &left_id_col))
         PG_RETURN_POINTER(NULL);
-    if (!getarg_cstring(expr, 2, &left_valid_col))
+    if (!getarg_cstring(expr, 2, "temporal_semijoin", &left_valid_col))
         PG_RETURN_POINTER(NULL);
-    if (!getarg_cstring(expr, 3, &right_table))
+    if (!getarg_cstring(expr, 3, "temporal_semijoin", &right_table))
         PG_RETURN_POINTER(NULL);
-    if (!getarg_cstring(expr, 4, &right_id_col))
+    if (!getarg_cstring(expr, 4, "temporal_semijoin", &right_id_col))
         PG_RETURN_POINTER(NULL);
-    if (!getarg_cstring(expr, 5, &right_valid_col))
+    if (!getarg_cstring(expr, 5, "temporal_semijoin", &right_valid_col))
         PG_RETURN_POINTER(NULL);
 
     /*
@@ -269,6 +279,149 @@ temporal_semijoin_support(PG_FUNCTION_ARGS)
             &sql);
 
     querytree = build_query(sql, req, "temporal_semijoin");
+
+    PG_RETURN_POINTER(querytree);
+}
+
+/*
+ * temporal_antijoin_sql - build SQL for antijoin query
+ */
+static void
+temporal_antijoin_sql(
+    char *left_table,
+    char *left_id_col,
+    char *left_valid_col,
+    char *right_table,
+    char *right_id_col,
+    char *right_valid_col,
+    char **result
+) {
+    StringInfoData q;
+    char left_table_q[MAX_QUOTED_REL_NAME_LEN];
+    char left_id_col_q[MAX_QUOTED_NAME_LEN];
+    char left_valid_col_q[MAX_QUOTED_NAME_LEN];
+    char right_table_q[MAX_QUOTED_REL_NAME_LEN];
+    char right_id_col_q[MAX_QUOTED_NAME_LEN];
+    char right_valid_col_q[MAX_QUOTED_NAME_LEN];
+    char *result_valid_col_q;
+    char *subquery_alias;
+
+    quoteOneName(left_table_q, left_table);
+    quoteOneName(left_id_col_q, left_id_col);
+    quoteOneName(left_valid_col_q, left_valid_col);
+    quoteOneName(right_table_q, right_table);
+    quoteOneName(right_id_col_q, right_id_col);
+    quoteOneName(right_valid_col_q, right_valid_col);
+    result_valid_col_q = left_valid_col_q;
+
+    // TODO: When we let you select extra columns from the left_table,
+    // we will need to check for conflicts against those too.
+    if (strcmp("j", left_table) == 0 || strcmp("j", right_table) == 0)
+    {
+        if (strcmp("j1", left_table) == 0 || strcmp("j1", right_table) == 0)
+            subquery_alias = "j2";
+        else
+            subquery_alias = "j1";
+    }
+    else
+        subquery_alias = "j";
+
+    /*
+     * SELECT  a.id,
+     *         UNNEST(CASE WHEN j.valid_at IS NULL THEN multirange(a.valid_at)
+     *                     ELSE multirange(a.valid_at) - j.valid_at END) AS valid_at
+     * FROM    a
+     * LEFT JOIN (
+     *   SELECT  b.id, range_agg(b.valid_at) AS valid_at
+     *   FROM    b
+     *   GROUP BY b.id
+     * ) AS j
+     * ON a.id = j.id AND a.valid_at && j.valid_at
+     * WHERE   NOT isempty(a.valid_at);
+     */
+    initStringInfo(&q);
+    appendStringInfo(&q,
+            "SELECT %1$s.%2$s, UNNEST(CASE WHEN %7$s.%6$s IS NULL THEN multirange(%1$s.%3$s)\n"
+            "                              ELSE multirange(%1$s.%3$s) - %7$s.%6$s END) AS %8$s\n"
+            "FROM %1$s\n"
+            "LEFT JOIN (\n"
+            "  SELECT %4$s.%5$s, range_agg(%4$s.%6$s) AS %6$s\n"
+            "  FROM %4$s\n"
+            "  GROUP BY %4$s.%5$s\n"
+            ") AS %7$s\n"
+            "ON %1$s.%2$s = %7$s.%5$s AND %1$s.%3$s && %7$s.%6$s"
+            "WHERE NOT isempty(%1$s.%3$s)",
+            left_table_q, left_id_col_q, left_valid_col_q,
+            right_table_q, right_id_col_q, right_valid_col_q,
+            subquery_alias, result_valid_col_q);
+
+    *result = q.data;
+}
+
+/*
+ * Inline the temporal_antijoin function call.
+ */
+Datum
+temporal_antijoin_support(PG_FUNCTION_ARGS)
+{
+    Node *rawreq = (Node *) PG_GETARG_POINTER(0);
+    SupportRequestInlineInFrom *req;
+    FuncExpr *expr;
+    char *left_table;
+    char *left_id_col;
+    char *left_valid_col;
+    char *right_table;
+    char *right_id_col;
+    char *right_valid_col;
+    char *sql;
+    Query *querytree;
+
+    /* We only handle InlineInFrom support requests. */
+    if (!IsA(rawreq, SupportRequestInlineInFrom))
+        PG_RETURN_POINTER(NULL);
+
+    req = (SupportRequestInlineInFrom *) rawreq;
+    expr = (FuncExpr *) req->rtfunc->funcexpr;
+
+    if (list_length(expr->args) != 6)
+    {
+        ereport(WARNING, (errmsg("temporal_antijoin called with %d args but expected 6", list_length(expr->args))));
+        PG_RETURN_POINTER(NULL);
+    }
+
+    /*
+     * Extract strings from the func's arguments.
+     * They must all be Const and TEXT.
+     */
+    if (!getarg_cstring(expr, 0, "temporal_antijoin", &left_table))
+        PG_RETURN_POINTER(NULL);
+    if (!getarg_cstring(expr, 1, "temporal_antijoin", &left_id_col))
+        PG_RETURN_POINTER(NULL);
+    if (!getarg_cstring(expr, 2, "temporal_antijoin", &left_valid_col))
+        PG_RETURN_POINTER(NULL);
+    if (!getarg_cstring(expr, 3, "temporal_antijoin", &right_table))
+        PG_RETURN_POINTER(NULL);
+    if (!getarg_cstring(expr, 4, "temporal_antijoin", &right_id_col))
+        PG_RETURN_POINTER(NULL);
+    if (!getarg_cstring(expr, 5, "temporal_antijoin", &right_valid_col))
+        PG_RETURN_POINTER(NULL);
+
+    /*
+     * Everything looks good. Build a Node tree for the query.
+     * For now it's easiest to let Postgres do it for us,
+     * as if it were inlining a SQL function
+     * (see inline_set_returning_function in optimizer/util/clauses.c).
+     */
+    temporal_antijoin_sql(
+            left_table,
+            left_id_col,
+            left_valid_col,
+            right_table,
+            right_id_col,
+            right_valid_col,
+            &sql);
+
+    querytree = build_query(sql, req, "temporal_antijoin");
 
     PG_RETURN_POINTER(querytree);
 }
