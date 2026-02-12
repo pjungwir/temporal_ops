@@ -25,9 +25,6 @@ LANGUAGE C;
  *        'b', 'a_id', valid_at')
  *      AS j(id int, valid_at daterange)
  *
- * TODO: Try to use SupportRequestSimplify to return a Node tree instead,
- * so that the planner can push down predicates.
- *
  * TODO: Implement SupportRequestRows to give better selectivity estimates.
  * (Is that even necessary if we are replacing ourself with a Node tree?)
  *
