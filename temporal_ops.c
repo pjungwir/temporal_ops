@@ -149,6 +149,7 @@ temporal_semijoin_sql(
     char right_table_q[MAX_QUOTED_REL_NAME_LEN];
     char right_id_col_q[MAX_QUOTED_NAME_LEN];
     char right_valid_col_q[MAX_QUOTED_NAME_LEN];
+    char *result_valid_col_q;    // TODO: parameterize this too (optionally)
     char *subquery_alias;
 
     quoteOneName(left_table_q, left_table);
@@ -157,6 +158,7 @@ temporal_semijoin_sql(
     quoteOneName(right_table_q, right_table);
     quoteOneName(right_id_col_q, right_id_col);
     quoteOneName(right_valid_col_q, right_valid_col);
+    result_valid_col_q = left_valid_col_q;
 
     // TODO: When we let you select extra columns from the left_table,
     // we will need to check for conflicts against those too.
@@ -182,17 +184,17 @@ temporal_semijoin_sql(
      */
     initStringInfo(&q);
     appendStringInfo(&q,
-            "SELECT %1$s.%2$s, UNNEST(multirange(%1$s.%3$s) * %7$s.%3$s) AS %3$s\n"
+            "SELECT %1$s.%2$s, UNNEST(multirange(%1$s.%3$s) * %7$s.%6$s) AS %8$s\n"
             "FROM %1$s\n"
             "JOIN (\n"
             "  SELECT %4$s.%5$s, range_agg(%4$s.%6$s) AS %6$s\n"
             "  FROM %4$s\n"
             "  GROUP BY %4$s.%5$s\n"
             ") AS %7$s\n"
-            "ON %1$s.%2$s = %7$s.%5$s AND %1$s.%3$s && %7$s.%3$s",
+            "ON %1$s.%2$s = %7$s.%5$s AND %1$s.%3$s && %7$s.%6$s",
             left_table_q, left_id_col_q, left_valid_col_q,
             right_table_q, right_id_col_q, right_valid_col_q,
-            subquery_alias);
+            subquery_alias, result_valid_col_q);
 
     *result = q.data;
 }
