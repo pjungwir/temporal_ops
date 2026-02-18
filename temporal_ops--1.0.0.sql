@@ -43,10 +43,10 @@ LANGUAGE C;
  * for each left.
  */
 CREATE OR REPLACE FUNCTION temporal_semijoin(
-  left_table text,
+  left_table regclass,
   left_id_col text,
   left_valid_col text,
-  right_table text,
+  right_table regclass,
   right_id_col text,
   right_valid_col text
 )
@@ -54,9 +54,9 @@ RETURNS SETOF RECORD AS $$
 DECLARE
   subquery TEXT := 'j';
 BEGIN
-  IF left_table = 'j' OR right_table = 'j' THEN
+  IF left_table::text = 'j' OR right_table::text = 'j' THEN
     subquery := 'j1';
-    IF left_table = 'j1' OR right_table = 'j1' THEN
+    IF left_table::text = 'j1' OR right_table::text = 'j1' THEN
       subquery := 'j2';
     END IF;
   END IF;
@@ -74,10 +74,10 @@ END;
 $$ STABLE LEAKPROOF PARALLEL SAFE SUPPORT temporal_semijoin_support LANGUAGE plpgsql;
 
 CREATE OR REPLACE FUNCTION temporal_antijoin(
-  left_table text,
+  left_table regclass,
   left_id_col text,
   left_valid_col text,
-  right_table text,
+  right_table regclass,
   right_id_col text,
   right_valid_col text
 )
@@ -85,9 +85,9 @@ RETURNS SETOF RECORD AS $$
 DECLARE
   subquery TEXT := 'j';
 BEGIN
-  IF left_table = 'j' OR right_table = 'j' THEN
+  IF left_table::text = 'j' OR right_table::text = 'j' THEN
     subquery := 'j1';
-    IF left_table = 'j1' OR right_table = 'j1' THEN
+    IF left_table::text = 'j1' OR right_table::text = 'j1' THEN
       subquery := 'j2';
     END IF;
   END IF;
@@ -108,10 +108,10 @@ END;
 $$ STABLE LEAKPROOF PARALLEL SAFE SUPPORT temporal_antijoin_support LANGUAGE plpgsql;
 
 CREATE OR REPLACE FUNCTION temporal_outer_join(
-  left_table text,
+  left_table regclass,
   left_id_col text,
   left_valid_col text,
-  right_table text,
+  right_table regclass,
   right_id_col text,
   right_valid_col text
 )
@@ -127,15 +127,15 @@ DECLARE
     AND     attname = left_valid_col
   );
 BEGIN
-  IF left_table = 'ja' OR right_table = 'ja' THEN
+  IF left_table::text = 'ja' OR right_table::text = 'ja' THEN
     subquery1 := 'ja1';
-    IF left_table = 'ja1' OR right_table = 'ja1' THEN
+    IF left_table::text = 'ja1' OR right_tabl::text = 'ja1' THEN
       subquery1 := 'ja2';
     END IF;
   END IF;
-  IF left_table = 'jb' OR right_table = 'jb' THEN
+  IF left_table::text = 'jb' OR right_table::text = 'jb' THEN
     subquery2 := 'jb1';
-    IF left_table = 'jb1' OR right_table = 'jb1' THEN
+    IF left_table::text = 'jb1' OR right_table::text = 'jb1' THEN
       subquery2 := 'jb2';
     END IF;
   END IF;
