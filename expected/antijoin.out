@@ -58,3 +58,25 @@ WHERE   id = 1;
 DROP INDEX idx_a_id;
 DROP INDEX idx_b_id;
 DELETE FROM a WHERE id = 10;
+-- Without the support function:
+CREATE OR REPLACE FUNCTION temporal_antijoin_support(INTERNAL)
+RETURNS INTERNAL
+AS 'temporal_ops', 'noop_support'
+LANGUAGE C;
+SELECT	*
+FROM		temporal_antijoin('a', 'id', 'valid_at', 'b', 'id', 'valid_at') AS t(id int, valid_at int4range);
+NOTICE:  noop_support 464
+NOTICE:  noop_support 466
+NOTICE:  noop_support 469
+NOTICE:  noop_support 468
+ id | valid_at 
+----+----------
+  1 | [1,5)
+  1 | [10,15)
+  2 | [1,20)
+  4 | [1,20)
+  6 | [1,5)
+  6 | [12,20)
+  7 | [5,20)
+(7 rows)
+

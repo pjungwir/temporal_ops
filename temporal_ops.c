@@ -20,6 +20,9 @@
 
 PG_MODULE_MAGIC;
 
+Datum noop_support(PG_FUNCTION_ARGS);
+PG_FUNCTION_INFO_V1(noop_support);
+
 Datum temporal_semijoin_support(PG_FUNCTION_ARGS);
 PG_FUNCTION_INFO_V1(temporal_semijoin_support);
 
@@ -255,6 +258,18 @@ temporal_semijoin_sql(
             subquery_alias, result_valid_col_q);
 
     *result = q.data;
+}
+
+/*
+ * Just for testing: replace the real support function with this,
+ * so that you can force the PL/pgSQL implementation to run.
+ */
+Datum
+noop_support(PG_FUNCTION_ARGS)
+{
+    Node *rawreq = (Node *) PG_GETARG_POINTER(0);
+    ereport(NOTICE, (errmsg("noop_support %u", rawreq->type)));
+    PG_RETURN_POINTER(NULL);
 }
 
 /*

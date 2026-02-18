@@ -35,3 +35,11 @@ WHERE   id = 1;
 DROP INDEX idx_a_id;
 DROP INDEX idx_b_id;
 DELETE FROM a WHERE id = 10;
+
+-- Without the support function:
+CREATE OR REPLACE FUNCTION temporal_semijoin_support(INTERNAL)
+RETURNS INTERNAL
+AS 'temporal_ops', 'noop_support'
+LANGUAGE C;
+SELECT	*
+FROM		temporal_semijoin('a', 'id', 'valid_at', 'b', 'id', 'valid_at') AS t(id int, valid_at int4range);
