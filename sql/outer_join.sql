@@ -109,3 +109,27 @@ ORDER BY (j1.a).id, valid_at;
 SELECT	*
 FROM		temporal_outer_join('a', 'id', 'valid_at', 'b', 'id', 'valid_at') AS t(a a, b b, valid_at int4range)
 ORDER BY (t.a).id, valid_at;
+
+-- Plan is good (qual pushed down, only one scan per table):
+INSERT INTO a SELECT 10, int4range(i, i+1) FROM generate_series(1,1000) s(i);
+CREATE INDEX idx_a_id ON a (id);
+CREATE INDEX idx_b_id ON b (id);
+ANALYZE a, b;
+
+EXPLAIN SELECT	*
+FROM		temporal_outer_join('a', 'id', 'valid_at', 'b', 'id', 'valid_at') AS t(a a, b b, valid_at int4range)
+WHERE (t.a).id = 1
+ORDER BY (t.a).id, valid_at;
+
+DROP INDEX idx_a_id;
+DROP INDEX idx_b_id;
+DELETE FROM a WHERE id = 10;
+
+-- Without the support function:
+CREATE OR REPLACE FUNCTION temporal_outer_join_support(INTERNAL)
+RETURNS INTERNAL
+AS 'temporal_ops', 'noop_support'
+LANGUAGE C;
+SELECT	*
+FROM		temporal_outer_join('a', 'id', 'valid_at', 'b', 'id', 'valid_at') AS t(a a, b b, valid_at int4range)
+ORDER BY (t.a).id, valid_at;

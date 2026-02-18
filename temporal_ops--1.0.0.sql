@@ -13,6 +13,11 @@ RETURNS INTERNAL
 AS 'temporal_ops', 'temporal_antijoin_support'
 LANGUAGE C;
 
+CREATE OR REPLACE FUNCTION temporal_outer_join_support(INTERNAL)
+RETURNS INTERNAL
+AS 'temporal_ops', 'temporal_outer_join_support'
+LANGUAGE C;
+
 /*
  * temporal_semijoin - semijoins left table+columns to right table+columns
  *
@@ -162,4 +167,4 @@ BEGIN
   right_table, right_id_col, right_valid_col,
   subquery1, subquery2, result_valid_col, result_valid_col_type);
 END;
-$$ STABLE LEAKPROOF PARALLEL SAFE /* SUPPORT temporal_outer_join_support */ LANGUAGE plpgsql;
+$$ STABLE LEAKPROOF PARALLEL SAFE SUPPORT temporal_outer_join_support LANGUAGE plpgsql;

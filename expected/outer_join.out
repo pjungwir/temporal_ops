@@ -200,3 +200,65 @@ ORDER BY (t.a).id, valid_at;
  (9,"[1,20)") | (9,"[1,20)")  | [1,20)
 (12 rows)
 
+-- Plan is good (qual pushed down, only one scan per table):
+INSERT INTO a SELECT 10, int4range(i, i+1) FROM generate_series(1,1000) s(i);
+CREATE INDEX idx_a_id ON a (id);
+CREATE INDEX idx_b_id ON b (id);
+ANALYZE a, b;
+EXPLAIN SELECT	*
+FROM		temporal_outer_join('a', 'id', 'valid_at', 'b', 'id', 'valid_at') AS t(a a, b b, valid_at int4range)
+WHERE (t.a).id = 1
+ORDER BY (t.a).id, valid_at;
+                                           QUERY PLAN                                            
+-------------------------------------------------------------------------------------------------
+ Sort  (cost=15.35..15.63 rows=110 width=109)
+   Sort Key: b.valid_at
+   ->  Nested Loop  (cost=9.32..11.62 rows=110 width=109)
+         ->  GroupAggregate  (cost=9.32..9.35 rows=1 width=105)
+               Group Key: a.*
+               ->  Sort  (cost=9.32..9.32 rows=1 width=108)
+                     Sort Key: a.*
+                     ->  Nested Loop Left Join  (cost=0.15..9.31 rows=1 width=108)
+                           Join Filter: (a.valid_at && b_1.valid_at)
+                           ->  Index Scan using idx_a_id on a  (cost=0.15..8.17 rows=1 width=58)
+                                 Index Cond: (id = 1)
+                                 Filter: (NOT isempty(valid_at))
+                           ->  Seq Scan on b b_1  (cost=0.00..1.11 rows=2 width=58)
+                                 Filter: (id = 1)
+         ->  Append  (cost=0.00..1.18 rows=110 width=64)
+               ->  Function Scan on unnest b  (cost=0.00..0.10 rows=10 width=64)
+               ->  ProjectSet  (cost=0.00..0.52 rows=100 width=64)
+                     ->  Result  (cost=0.00..0.01 rows=1 width=0)
+(18 rows)
+
+DROP INDEX idx_a_id;
+DROP INDEX idx_b_id;
+DELETE FROM a WHERE id = 10;
+-- Without the support function:
+CREATE OR REPLACE FUNCTION temporal_outer_join_support(INTERNAL)
+RETURNS INTERNAL
+AS 'temporal_ops', 'noop_support'
+LANGUAGE C;
+SELECT	*
+FROM		temporal_outer_join('a', 'id', 'valid_at', 'b', 'id', 'valid_at') AS t(a a, b b, valid_at int4range)
+ORDER BY (t.a).id, valid_at;
+NOTICE:  noop_support 464
+NOTICE:  noop_support 466
+NOTICE:  noop_support 469
+NOTICE:  noop_support 468
+      a       |       b       | valid_at 
+--------------+---------------+----------
+ (1,"[1,20)") |               | [1,5)
+ (1,"[1,20)") | (1,"[5,10)")  | [5,10)
+ (1,"[1,20)") |               | [10,15)
+ (1,"[1,20)") | (1,"[15,30)") | [15,20)
+ (2,"[1,20)") |               | [1,20)
+ (4,"[1,20)") |               | [1,20)
+ (6,"[1,20)") |               | [1,5)
+ (6,"[1,20)") | (6,"[5,10)")  | [5,10)
+ (6,"[1,20)") | (6,"[5,12)")  | [5,12)
+ (6,"[1,20)") |               | [12,20)
+ (7,"[5,20)") |               | [5,20)
+ (9,"[1,20)") | (9,"[1,20)")  | [1,20)
+(12 rows)
+
