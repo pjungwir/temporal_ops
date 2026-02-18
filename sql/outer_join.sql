@@ -82,3 +82,21 @@ JOIN LATERAL (
 ) AS j2 ON true
 WHERE   NOT isempty((j1.a).valid_at)
 ORDER BY 1, 5;
+
+-- The same, but with whole-row outputs:
+SELECT  j1.a, j2.b, j2.valid_at
+FROM    (
+  SELECT  a, array_agg(ROW(b, COALESCE(a.valid_at * b.valid_at, a.valid_at))) AS bs,
+          range_agg(b.valid_at) AS bs_valid_at
+  FROM    a
+  LEFT JOIN b
+  ON      a.id = b.id AND a.valid_at && b.valid_at
+  GROUP BY a
+) AS j1
+JOIN LATERAL (
+  SELECT bs.b, valid_at FROM UNNEST(j1.bs) AS bs(b b, valid_at int4range)
+  UNION ALL
+  SELECT NULL, UNNEST(multirange((j1.a).valid_at) - j1.bs_valid_at)
+) AS j2 ON true
+WHERE   NOT isempty((j1.a).valid_at)
+ORDER BY (j1.a).id, valid_at;
