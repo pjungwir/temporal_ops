@@ -104,3 +104,8 @@ JOIN LATERAL (
 ) AS j2 ON true
 WHERE   NOT isempty((j1.a).valid_at)
 ORDER BY (j1.a).id, valid_at;
+
+-- Test with our function:
+SELECT	*
+FROM		temporal_outer_join('a', 'id', 'valid_at', 'b', 'id', 'valid_at') AS t(a a, b b, valid_at int4range)
+ORDER BY (t.a).id, valid_at;

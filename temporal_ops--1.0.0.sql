@@ -106,3 +106,60 @@ BEGIN
   $j$, left_table, left_id_col, left_valid_col, right_table, right_id_col, right_valid_col, subquery);
 END;
 $$ STABLE LEAKPROOF PARALLEL SAFE SUPPORT temporal_antijoin_support LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION temporal_outer_join(
+  left_table text,
+  left_id_col text,
+  left_valid_col text,
+  right_table text,
+  right_id_col text,
+  right_valid_col text
+)
+RETURNS SETOF RECORD AS $$
+DECLARE
+  subquery1 TEXT := 'ja';
+  subquery2 TEXT := 'jb';
+  result_valid_col TEXT := left_valid_col;
+  result_valid_col_type TEXT := (
+    SELECT  atttypid::regtype::text
+    FROM    pg_attribute
+    WHERE   attrelid = left_table::regclass
+    AND     attname = left_valid_col
+  );
+BEGIN
+  IF left_table = 'ja' OR right_table = 'ja' THEN
+    subquery1 := 'ja1';
+    IF left_table = 'ja1' OR right_table = 'ja1' THEN
+      subquery1 := 'ja2';
+    END IF;
+  END IF;
+  IF left_table = 'jb' OR right_table = 'jb' THEN
+    subquery2 := 'jb1';
+    IF left_table = 'jb1' OR right_table = 'jb1' THEN
+      subquery2 := 'jb2';
+    END IF;
+  END IF;
+
+  RETURN QUERY EXECUTE format($j$
+	  SELECT  %7$I.%1$I, %8$I.%4$I, %8$I.%9$I
+	  FROM    (
+	    SELECT  %1$I,
+              array_agg(ROW(%4$I, COALESCE(%1$I.%3$I * %4$I.%6$I, %1$I.%3$I))) AS %4$I,
+	            range_agg(%4$I.%6$I) AS %6$I
+	    FROM    %1$I
+	    LEFT JOIN %4$I
+	    ON      %1$I.%2$I = %4$I.%5$I AND %1$I.%3$I && %4$I.%6$I
+	    GROUP BY %1$I
+	  ) AS %7$I
+	  JOIN LATERAL (
+	    SELECT %4$I.%4$I, %4$I.%9$I FROM UNNEST(%7$I.%4$I) AS %4$I(%4$I %4$I, %9$I %10$I)
+	    UNION ALL
+	    SELECT NULL, UNNEST(multirange((%7$I.%1$I).%3$I) - %7$I.%6$I)
+	  ) AS %8$I ON true
+	  WHERE   NOT isempty((%7$I.%1$I).%3$I);
+  $j$,
+  left_table, left_id_col, left_valid_col,
+  right_table, right_id_col, right_valid_col,
+  subquery1, subquery2, result_valid_col, result_valid_col_type);
+END;
+$$ STABLE LEAKPROOF PARALLEL SAFE /* SUPPORT temporal_outer_join_support */ LANGUAGE plpgsql;
