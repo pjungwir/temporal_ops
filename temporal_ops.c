@@ -52,21 +52,17 @@ quoteOneName(char *buffer, const char *name)
 }
 
 /*
- * Returns a quoted and schema-qualified table name in result,
+ * Returns (unquoted) schema and table name
  * based on the nth parameter to the function in expr.
- *
- * Also sets unquoted (if not-NULL) to the name without quoting or qualification.
  *
  * It must be a Const node of Oid type.
  */
-static bool getarg_table_name(FuncExpr *expr, int n, char *func_name, char **unquoted, char **result)
+static bool getarg_table_name(FuncExpr *expr, int n, char *func_name, char **nspname, char **relname)
 {
     Node *node;
     Const *c;
     HeapTuple tp;
     Form_pg_class reltup;
-    char *relname;
-    char *nspname;
 
     node = lfirst(list_nth_cell(expr->args, n));
     if (!IsA(node, Const))
@@ -86,11 +82,8 @@ static bool getarg_table_name(FuncExpr *expr, int n, char *func_name, char **unq
     if (!HeapTupleIsValid(tp))
         elog(ERROR, "cache lookup failed for relation %u", DatumGetObjectId(c->constvalue));
     reltup = (Form_pg_class) GETSTRUCT(tp);
-    relname = NameStr(reltup->relname);
-    nspname = get_namespace_name_or_temp(reltup->relnamespace);
-
-    if (unquoted) *unquoted = relname;
-    *result = quote_qualified_identifier(nspname, relname);
+    *relname = NameStr(reltup->relname);
+    *nspname = get_namespace_name_or_temp(reltup->relnamespace);
 
     ReleaseSysCache(tp);
 
@@ -193,31 +186,37 @@ static Query *build_query(char *sql, SupportRequestInlineInFrom *req, char *func
 
 /*
  * temporal_semijoin_sql - build SQL for semijoin query
- *
- * Table names must be quoted and schema-qualified already.
  */
 static void
 temporal_semijoin_sql(
+    char *left_schema,
     char *left_table,
-    char *left_table_q,
     char *left_id_col,
     char *left_valid_col,
+    char *right_schema,
     char *right_table,
-    char *right_table_q,
     char *right_id_col,
     char *right_valid_col,
     char **result
 ) {
     StringInfoData q;
+    char *left_nsp_table_q;
+    char left_table_q[MAX_QUOTED_NAME_LEN];
     char left_id_col_q[MAX_QUOTED_NAME_LEN];
     char left_valid_col_q[MAX_QUOTED_NAME_LEN];
+    char *right_nsp_table_q;
+    char right_table_q[MAX_QUOTED_NAME_LEN];
     char right_id_col_q[MAX_QUOTED_NAME_LEN];
     char right_valid_col_q[MAX_QUOTED_NAME_LEN];
     char *result_valid_col_q;    // TODO: parameterize this too (optionally)
     char *subquery_alias;
 
+    left_nsp_table_q = quote_qualified_identifier(left_schema, left_table);
+    quoteOneName(left_table_q, left_table);
     quoteOneName(left_id_col_q, left_id_col);
     quoteOneName(left_valid_col_q, left_valid_col);
+    right_nsp_table_q = quote_qualified_identifier(right_schema, right_table);
+    quoteOneName(right_table_q, right_table);
     quoteOneName(right_id_col_q, right_id_col);
     quoteOneName(right_valid_col_q, right_valid_col);
     result_valid_col_q = left_valid_col_q;
@@ -236,26 +235,26 @@ temporal_semijoin_sql(
 
     /*
      * SELECT  a.id, UNNEST(multirange(a.valid_at) * j.valid_at) AS valid_at
-     * FROM    a
+     * FROM    public.a
      * JOIN (
      *   SELECT  b.id, range_agg(b.valid_at) AS valid_at
-     *   FROM    b
+     *   FROM    public.b
      *   GROUP BY b.id
      * ) AS j
      * ON a.id = j.id AND a.valid_at && j.valid_at;
      */
     initStringInfo(&q);
     appendStringInfo(&q,
-            "SELECT %1$s.%2$s, UNNEST(multirange(%1$s.%3$s) * %7$s.%6$s) AS %8$s\n"
+            "SELECT %2$s.%3$s, UNNEST(multirange(%2$s.%4$s) * %9$s.%8$s) AS %10$s\n"
             "FROM %1$s\n"
             "JOIN (\n"
-            "  SELECT %4$s.%5$s, range_agg(%4$s.%6$s) AS %6$s\n"
-            "  FROM %4$s\n"
-            "  GROUP BY %4$s.%5$s\n"
-            ") AS %7$s\n"
-            "ON %1$s.%2$s = %7$s.%5$s AND %1$s.%3$s && %7$s.%6$s",
-            left_table_q, left_id_col_q, left_valid_col_q,
-            right_table_q, right_id_col_q, right_valid_col_q,
+            "  SELECT %6$s.%7$s, range_agg(%6$s.%8$s) AS %8$s\n"
+            "  FROM %5$s\n"
+            "  GROUP BY %6$s.%7$s\n"
+            ") AS %9$s\n"
+            "ON %2$s.%3$s = %9$s.%7$s AND %2$s.%4$s && %9$s.%8$s",
+            left_nsp_table_q, left_table_q, left_id_col_q, left_valid_col_q,
+            right_nsp_table_q, right_table_q, right_id_col_q, right_valid_col_q,
             subquery_alias, result_valid_col_q);
 
     *result = q.data;
@@ -288,12 +287,12 @@ temporal_semijoin_support(PG_FUNCTION_ARGS)
     Node *rawreq = (Node *) PG_GETARG_POINTER(0);
     SupportRequestInlineInFrom *req;
     FuncExpr *expr;
+    char *left_schema;
     char *left_table;
-    char *left_table_q;
     char *left_id_col;
     char *left_valid_col;
+    char *right_schema;
     char *right_table;
-    char *right_table_q;
     char *right_id_col;
     char *right_valid_col;
     char *sql;
@@ -316,13 +315,13 @@ temporal_semijoin_support(PG_FUNCTION_ARGS)
      * Extract strings from the func's arguments.
      * They must all be Const and TEXT.
      */
-    if (!getarg_table_name(expr, 0, "temporal_semijoin", &left_table, &left_table_q))
+    if (!getarg_table_name(expr, 0, "temporal_semijoin", &left_schema, &left_table))
         PG_RETURN_POINTER(NULL);
     if (!getarg_cstring(expr, 1, "temporal_semijoin", &left_id_col))
         PG_RETURN_POINTER(NULL);
     if (!getarg_cstring(expr, 2, "temporal_semijoin", &left_valid_col))
         PG_RETURN_POINTER(NULL);
-    if (!getarg_table_name(expr, 3, "temporal_semijoin", &right_table, &right_table_q))
+    if (!getarg_table_name(expr, 3, "temporal_semijoin", &right_schema, &right_table))
         PG_RETURN_POINTER(NULL);
     if (!getarg_cstring(expr, 4, "temporal_semijoin", &right_id_col))
         PG_RETURN_POINTER(NULL);
@@ -336,12 +335,12 @@ temporal_semijoin_support(PG_FUNCTION_ARGS)
      * (see inline_set_returning_function in optimizer/util/clauses.c).
      */
     temporal_semijoin_sql(
+            left_schema,
             left_table,
-            left_table_q,
             left_id_col,
             left_valid_col,
+            right_schema,
             right_table,
-            right_table_q,
             right_id_col,
             right_valid_col,
             &sql);
@@ -358,26 +357,34 @@ temporal_semijoin_support(PG_FUNCTION_ARGS)
  */
 static void
 temporal_antijoin_sql(
+    char *left_schema,
     char *left_table,
-    char *left_table_q,
     char *left_id_col,
     char *left_valid_col,
+    char *right_schema,
     char *right_table,
-    char *right_table_q,
     char *right_id_col,
     char *right_valid_col,
     char **result
 ) {
     StringInfoData q;
+    char *left_nsp_table_q;
+    char left_table_q[MAX_QUOTED_NAME_LEN];
     char left_id_col_q[MAX_QUOTED_NAME_LEN];
     char left_valid_col_q[MAX_QUOTED_NAME_LEN];
+    char *right_nsp_table_q;
+    char right_table_q[MAX_QUOTED_NAME_LEN];
     char right_id_col_q[MAX_QUOTED_NAME_LEN];
     char right_valid_col_q[MAX_QUOTED_NAME_LEN];
     char *result_valid_col_q;
     char *subquery_alias;
 
+    left_nsp_table_q = quote_qualified_identifier(left_schema, left_table);
+    quoteOneName(left_table_q, left_table);
     quoteOneName(left_id_col_q, left_id_col);
     quoteOneName(left_valid_col_q, left_valid_col);
+    right_nsp_table_q = quote_qualified_identifier(right_schema, right_table);
+    quoteOneName(right_table_q, right_table);
     quoteOneName(right_id_col_q, right_id_col);
     quoteOneName(right_valid_col_q, right_valid_col);
     result_valid_col_q = left_valid_col_q;
@@ -409,18 +416,18 @@ temporal_antijoin_sql(
      */
     initStringInfo(&q);
     appendStringInfo(&q,
-            "SELECT %1$s.%2$s, UNNEST(CASE WHEN %7$s.%6$s IS NULL THEN multirange(%1$s.%3$s)\n"
-            "                              ELSE multirange(%1$s.%3$s) - %7$s.%6$s END) AS %8$s\n"
+            "SELECT %2$s.%3$s, UNNEST(CASE WHEN %9$s.%8$s IS NULL THEN multirange(%2$s.%4$s)\n"
+            "                              ELSE multirange(%2$s.%4$s) - %9$s.%8$s END) AS %10$s\n"
             "FROM %1$s\n"
             "LEFT JOIN (\n"
-            "  SELECT %4$s.%5$s, range_agg(%4$s.%6$s) AS %6$s\n"
-            "  FROM %4$s\n"
-            "  GROUP BY %4$s.%5$s\n"
-            ") AS %7$s\n"
-            "ON %1$s.%2$s = %7$s.%5$s AND %1$s.%3$s && %7$s.%6$s"
-            "WHERE NOT isempty(%1$s.%3$s)",
-            left_table_q, left_id_col_q, left_valid_col_q,
-            right_table_q, right_id_col_q, right_valid_col_q,
+            "  SELECT %6$s.%7$s, range_agg(%6$s.%8$s) AS %8$s\n"
+            "  FROM %5$s\n"
+            "  GROUP BY %6$s.%7$s\n"
+            ") AS %9$s\n"
+            "ON %2$s.%3$s = %9$s.%7$s AND %2$s.%4$s && %9$s.%8$s"
+            "WHERE NOT isempty(%2$s.%4$s)",
+            left_nsp_table_q, left_table_q, left_id_col_q, left_valid_col_q,
+            right_nsp_table_q, right_table_q, right_id_col_q, right_valid_col_q,
             subquery_alias, result_valid_col_q);
 
     *result = q.data;
@@ -435,12 +442,12 @@ temporal_antijoin_support(PG_FUNCTION_ARGS)
     Node *rawreq = (Node *) PG_GETARG_POINTER(0);
     SupportRequestInlineInFrom *req;
     FuncExpr *expr;
+    char *left_schema;
     char *left_table;
-    char *left_table_q;
     char *left_id_col;
     char *left_valid_col;
+    char *right_schema;
     char *right_table;
-    char *right_table_q;
     char *right_id_col;
     char *right_valid_col;
     char *sql;
@@ -463,13 +470,13 @@ temporal_antijoin_support(PG_FUNCTION_ARGS)
      * Extract strings from the func's arguments.
      * They must all be Const and TEXT.
      */
-    if (!getarg_table_name(expr, 0, "temporal_antijoin", &left_table, &left_table_q))
+    if (!getarg_table_name(expr, 0, "temporal_antijoin", &left_schema, &left_table))
         PG_RETURN_POINTER(NULL);
     if (!getarg_cstring(expr, 1, "temporal_antijoin", &left_id_col))
         PG_RETURN_POINTER(NULL);
     if (!getarg_cstring(expr, 2, "temporal_antijoin", &left_valid_col))
         PG_RETURN_POINTER(NULL);
-    if (!getarg_table_name(expr, 3, "temporal_antijoin", &right_table, &right_table_q))
+    if (!getarg_table_name(expr, 3, "temporal_antijoin", &right_schema, &right_table))
         PG_RETURN_POINTER(NULL);
     if (!getarg_cstring(expr, 4, "temporal_antijoin", &right_id_col))
         PG_RETURN_POINTER(NULL);
@@ -483,12 +490,12 @@ temporal_antijoin_support(PG_FUNCTION_ARGS)
      * (see inline_set_returning_function in optimizer/util/clauses.c).
      */
     temporal_antijoin_sql(
+            left_schema,
             left_table,
-            left_table_q,
             left_id_col,
             left_valid_col,
+            right_schema,
             right_table,
-            right_table_q,
             right_id_col,
             right_valid_col,
             &sql);
