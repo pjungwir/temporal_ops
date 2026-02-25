@@ -1,5 +1,119 @@
 # Temporal Ops
 
+The `temporal_ops` Postgres extension implements these temporal relational operators:
+
+- semijoin
+- antijoin
+- outer join
+- union (TODO)
+- except (TODO)
+- intersects (TODO)
+- aggregate (TODO)
+
+## Usage
+
+We provide a [set-returning function](TODO) for each operator,
+which takes the table and column name(s) for the inputs
+and returns a result relation.
+You can call this function inside the `FROM` clause of a query and treat its result like another table.
+
+For example, suppose you have two tables named `employees` and `positions`,
+where each position references an employee record via `employee_id`.
+Then you could get a semijoin like this:
+
+```sql
+SELECT  (emp).id, (emp).name, valid_at
+FROM    temporal_semijoin('employee', 'id', 'valid_at',
+                          'position', 'employee_id', 'valid_at')
+                          AS t(emp employee, valid_at tstzrange)
+```
+
+The function gives rows with two attributes: the first the rowtype of the left-hand input table,
+the second matching that table's valid time column.
+In your outer query, you can destructure the rowtype column as you like
+(here, to project on `id` and `name`).
+Note that because the function returns a `record` type, you must give an explicit column definition list, as above.
+The types must be correct, but you can name the columns whatever you like. This can be useful if you want both `valid_at` from the input table and the result valid time.
+
+Although the table names look like `text` parameters, they are actually [`regclass`](TODO).
+This means (1) the function also accepts oids (2) Postgres resolves the table name with its normal `search_path` rules.
+
+The functions include [support functions](TODO) so that at plan time,
+Postgres will replace the function call with an equivalent subquery,
+which it can inline into the outer query.
+This means that quals from the outer query (e.g. `WHERE id = 5`) get pushed down into the subquery.
+Otherwise the function would join *every row* of its inputs when called.
+
+### Semijoin
+
+There are several variations:
+
+`temporal_semijoin(left_table regclass, left_key text, right_table regclass, right_key text)` -
+Takes a single column name from each table to compare for equality, and assumes valid time is stored in columns named `valid_at`.
+
+`temporal_semijoin(left_table regclass, left_key text, left_valid_at text, right_table regclass, right_key text, right_valid_at text)`
+Takes a single column name from each table to compare for equality, and takes the names of your valid time columns.
+
+`temporal_semijoin(left_table regclass, left_keys text[], right_table regclass, right_keys text[])`
+Takes an array of column names from each table to compare for equality, and assumes valid time is stored in columns named `valid_at`. The two arrays must have the same number of elements. Each column in the left array is compared with the column in the corresponding position of the right array.
+
+`temporal_semijoin(left_table regclass, left_keys text[], left_valid_at text, right_table regclass, right_keys text[], right_valid_at text)`
+Takes an array of column names from each table to compare for equality, and takes the names of your valid time columns.
+
+
+## Installation
+
+TODO
+
+## Theory
+
+The gist is that while rows in an ordinary database table represent true statements,
+without being very precise about *when* they are true,
+a temporal table gives start & end times to say exactly when the row became true and stopped being true.
+A missing bound means something like "indefinitely" or "forever".
+In Postgres we can store the start & end time in a rangetype (or even multirange).
+Normally this temporal information is called "application time" or "valid time".
+See my [bibliography](https://illuminatedcomputing.com/TODO) for more information.
+
+The original relational theory gave various *operators* to manipulate relations (i.e. tables).
+The most important are the joins: inner join, outer join, semijoin, and antijoin.
+There are also setops---union, except, intersect---and aggregates.
+Then there is project (`SELECT`), select (`WHERE`), and the oft-forgotten division.
+
+In temporal theory, these operators can be adapted to account for their inputs' valid time.
+For some this is very simple: the projection of a temporal record is true for the same duration as its input.
+Likewise for select.
+(Techically it might be desirable to coalesce identical records if their valid times are adjacent (or if we store valid time in a multirange). But that is not the same as the operator.)
+But for most operators, things are more complicated.
+
+Take inner join: suppose that table `A` and table `B` store their valid times in `tstzrange` columns named `valid_at`.
+Then the result of joining row `a` to row `b` has a valid time of `a.valid_at * b.valid_at` (where `*` stands for intersection). The join is true when *both* `a` and `b` are true.
+That's still pretty easy, so we don't implement it here. (Maybe I will someday just for completeness.)
+
+Conceptually, semijoin and antijoin are straightforward.
+In `a semijoin b`, we want the result to be `a.valid_at * range_agg(b.valid_at)`, because we want `a` whenever any `b` gives a match. If we dealing with rangetypes, not multiranges, this may mean several isolated rows come from one `a` row. And if the other join conditions match (e.g. an equijoin on ids), but the valid time is empty, that `a` should not appear at all.
+
+In `a antijoin b`, we want the result to be `a.valid_at - range_agg(b.valid_at)`: all the times from `a` with no match. Again that might give more than one result row for each `a`, or no row if the valid time is empty.
+
+But in SQL these are harder to implement, because SQL implements semijoin and antijoin as correlated subqueries. For example:
+
+```sql
+-- semijoin in SQL, broken:
+SELECT  *, a.valid_at * b.valid_at
+FROM    a
+WHERE EXISTS (
+    SELECT  1
+    FROM    b
+    WHERE   a.id = b.id
+    AND     a.valid_at && b.valid_at
+);
+```
+
+The problem is that `b` is not in scope outside the subquery, so we can't say `a.valid_at * b.valid_at`.
+Likewise for antijoin.
+
+Outer join is also complicated.
+
 In a temporal database, inner joins are easy (even without SQL:2011), but what about outer joins?
 What about semijoins and antijoins?
 What about aggregates?
