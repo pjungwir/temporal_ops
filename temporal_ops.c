@@ -20,6 +20,10 @@
 
 PG_MODULE_MAGIC;
 
+// sql generation:
+
+// support functions:
+
 Datum noop_support(PG_FUNCTION_ARGS);
 PG_FUNCTION_INFO_V1(noop_support);
 
@@ -360,7 +364,7 @@ temporal_semijoin_support(PG_FUNCTION_ARGS)
 /*
  * temporal_antijoin_sql - build SQL for antijoin query
  *
- * Table names must already be quoted and namespaced.
+ * Identifier names should not be quoted.
  */
 static void
 temporal_antijoin_sql(
@@ -561,7 +565,7 @@ get_att_typname(Oid attrelid, char *attname) {
 /*
  * temporal_outer_join_sql - build SQL for outer join query
  *
- * Table names must already be quoted and namespaced.
+ * Identifier names should not be quoted.
  */
 static void
 temporal_outer_join_sql(
