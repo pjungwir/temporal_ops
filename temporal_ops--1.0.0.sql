@@ -3,6 +3,34 @@
 -- complain if script is sourced in psql, rather than via CREATE EXTENSION
 \echo Use "CREATE EXTENSION temporal_ops" to load this file \quit
 
+/*
+ * ********
+ * semijoin
+ * ********
+ */
+
+CREATE OR REPLACE FUNCTION temporal_semijoin_sql(
+  left_table regclass,
+  left_keys text[],
+  left_valid_at text,
+  right_table regclass,
+  right_keys text[],
+  right_valid_at text)
+RETURNS TEXT
+AS 'temporal_ops', 'temporal_semijoin_keys_sql'
+LANGUAGE C STRICT STABLE;
+
+CREATE OR REPLACE FUNCTION temporal_semijoin_sql(
+  left_table regclass,
+  left_key text,
+  left_valid_at text,
+  right_table regclass,
+  right_key text,
+  right_valid_at text)
+RETURNS TEXT
+AS 'temporal_ops', 'temporal_semijoin_key_sql'
+LANGUAGE C STRICT STABLE;
+
 CREATE OR REPLACE FUNCTION temporal_semijoin_support(INTERNAL)
 RETURNS INTERNAL
 AS 'temporal_ops', 'temporal_semijoin_support'
@@ -23,24 +51,20 @@ LANGUAGE C STRICT STABLE;
  *
  * Assumes an equijoin on a single key column plus application-time columns.
  *
- * Returns records with the left-hand id and intersecting application-time.
+ * Returns records with the left-hand tuple and intersecting application-time.
  *
  * Since this query returns SETOF RECORD,
  * the caller must declare the names+types of the result.
  * For example:
  *
- * SELECT *
+ * SELECT (j.a).*, valid_at
  * FROM temporal_semijoin(
  *        'a', 'id', 'valid_at',
  *        'b', 'a_id', valid_at')
- *      AS j(id int, valid_at daterange)
+ *      AS j(a a, valid_at daterange)
  *
  * TODO: Implement SupportRequestRows to give better selectivity estimates.
  * (Is that even necessary if we are replacing ourself with a Node tree?)
- *
- * TODO: Write a version with multiple key columns.
- *
- * TODO: Write a version with extra left-hand columns to SELECT.
  *
  * TODO: If left_col is an FK to right_col,
  * use a simpler SQL statement,
@@ -57,26 +81,37 @@ CREATE OR REPLACE FUNCTION temporal_semijoin(
 )
 RETURNS SETOF RECORD AS $$
 DECLARE
-  subquery TEXT := 'j';
+  q TEXT := temporal_semijoin_sql(left_table, left_id_col, left_valid_col,
+                                  right_table, right_id_col, right_valid_col);
 BEGIN
-  IF left_table::text = 'j' OR right_table::text = 'j' THEN
-    subquery := 'j1';
-    IF left_table::text = 'j1' OR right_table::text = 'j1' THEN
-      subquery := 'j2';
-    END IF;
-  END IF;
-  RETURN QUERY EXECUTE format($j$
-    SELECT  %1$I.%2$I, UNNEST(multirange(%1$I.%3$I) * %7$I.%6$I) AS %3$I
-    FROM    %1$I
-    JOIN (
-      SELECT  %4$I.%5$I, range_agg(%4$I.%6$I) AS %6$I
-      FROM    %4$I
-      GROUP BY %4$I.%5$I
-    ) AS %7$I
-    ON %1$I.%2$I = %7$I.%5$I AND %1$I.%3$I && %7$I.%6$I;
-  $j$, left_table, left_id_col, left_valid_col, right_table, right_id_col, right_valid_col, subquery);
+  RETURN QUERY EXECUTE q;
 END;
 $$ STABLE LEAKPROOF PARALLEL SAFE SUPPORT temporal_semijoin_support LANGUAGE plpgsql;
+
+
+
+/*
+ * Like temporal_semijoin above, but takes text[] instead of text
+ * for the scalar key columns.
+ */
+CREATE OR REPLACE FUNCTION temporal_semijoin(
+  left_table regclass,
+  left_id_cols text[],
+  left_valid_col text,
+  right_table regclass,
+  right_id_cols text[],
+  right_valid_col text
+)
+RETURNS SETOF RECORD AS $$
+DECLARE
+  q TEXT := temporal_semijoin_sql(left_table, left_id_cols, left_valid_col,
+                                  right_table, right_id_cols, right_valid_col);
+BEGIN
+  RETURN QUERY EXECUTE q;
+END;
+$$ STABLE LEAKPROOF PARALLEL SAFE SUPPORT temporal_semijoin_support LANGUAGE plpgsql;
+
+
 
 CREATE OR REPLACE FUNCTION temporal_antijoin(
   left_table regclass,

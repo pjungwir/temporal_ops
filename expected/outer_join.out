@@ -242,10 +242,7 @@ LANGUAGE C;
 SELECT	*
 FROM		temporal_outer_join('a', 'id', 'valid_at', 'b', 'id', 'valid_at') AS t(a a, b b, valid_at int4range)
 ORDER BY (t.a).id, valid_at;
-NOTICE:  noop_support 464
-NOTICE:  noop_support 466
-NOTICE:  noop_support 469
-NOTICE:  noop_support 468
+NOTICE:  noop_support
       a       |       b       | valid_at 
 --------------+---------------+----------
  (1,"[1,20)") |               | [1,5)

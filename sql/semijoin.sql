@@ -19,8 +19,12 @@ AND     NOT isempty(a.valid_at * b.valid_at)
 WHERE   a.id IS DISTINCT FROM 6;
 
 -- Test with our function:
-SELECT	*
-FROM		temporal_semijoin('a', 'id', 'valid_at', 'b', 'id', 'valid_at') AS t(id int, valid_at int4range);
+SELECT	(t.a).*, valid_at
+FROM		temporal_semijoin('a', 'id', 'valid_at', 'b', 'id', 'valid_at') AS t(a a, valid_at int4range);
+
+-- Test with our text[] function:
+SELECT	(t.a).*, valid_at
+FROM		temporal_semijoin('a', array['id'], 'valid_at', 'b', array['id'], 'valid_at') AS t(a a, valid_at int4range);
 
 -- Qual is pushed down:
 INSERT INTO a SELECT 10, int4range(i, i+1) FROM generate_series(1,1000) s(i);
@@ -28,9 +32,9 @@ CREATE INDEX idx_a_id ON a (id);
 CREATE INDEX idx_b_id ON b (id);
 ANALYZE a, b;
 
-EXPLAIN SELECT *
-FROM		temporal_semijoin('a', 'id', 'valid_at', 'b', 'id', 'valid_at') AS t(id int, valid_at int4range)
-WHERE   id = 1;
+EXPLAIN SELECT (t.a).*, valid_at
+FROM		temporal_semijoin('a', 'id', 'valid_at', 'b', 'id', 'valid_at') AS t(a a, valid_at int4range)
+WHERE   (t.a).id = 1;
 
 DROP INDEX idx_a_id;
 DROP INDEX idx_b_id;
@@ -41,5 +45,5 @@ CREATE OR REPLACE FUNCTION temporal_semijoin_support(INTERNAL)
 RETURNS INTERNAL
 AS 'temporal_ops', 'noop_support'
 LANGUAGE C;
-SELECT	*
-FROM		temporal_semijoin('a', 'id', 'valid_at', 'b', 'id', 'valid_at') AS t(id int, valid_at int4range);
+SELECT	(t.a).*, valid_at
+FROM		temporal_semijoin('a', 'id', 'valid_at', 'b', 'id', 'valid_at') AS t(a a, valid_at int4range);

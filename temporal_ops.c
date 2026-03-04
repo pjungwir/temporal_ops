@@ -22,6 +22,12 @@ PG_MODULE_MAGIC;
 
 // sql generation:
 
+Datum temporal_semijoin_sql(PG_FUNCTION_ARGS);
+PG_FUNCTION_INFO_V1(temporal_semijoin_keys_sql);
+
+Datum temporal_semijoin_sql(PG_FUNCTION_ARGS);
+PG_FUNCTION_INFO_V1(temporal_semijoin_key_sql);
+
 // support functions:
 
 Datum noop_support(PG_FUNCTION_ARGS);
@@ -59,19 +65,27 @@ quoteOneName(char *buffer, const char *name)
 }
 
 /*
- * Returns (unquoted) schema and table name
- * based on the nth parameter to the function in expr.
+ * get_nspname_relname - Gets the schema and table name for a given table oid.
  *
- * Also sets regclass (if not-NULL) to the oid of the table.
- *
- * It must be a Const node of Oid type.
+ * Results are palloc'd and not quoted.
  */
-static bool getarg_table_name(FuncExpr *expr, int n, char *func_name, Oid *regclass, char **nspname, char **relname)
-{
-    Node *node;
-    Const *c;
+static void get_nspname_relname(Oid regclass, char **nspname, char **relname) {
     HeapTuple tp;
     Form_pg_class reltup;
+
+    tp = SearchSysCache1(RELOID, regclass);
+    if (!HeapTupleIsValid(tp))
+        elog(ERROR, "cache lookup failed for relation %u", DatumGetObjectId(regclass));
+    reltup = (Form_pg_class) GETSTRUCT(tp);
+    *nspname = get_namespace_name_or_temp(reltup->relnamespace);
+    *relname = pstrdup(NameStr(reltup->relname));
+
+    ReleaseSysCache(tp);
+}
+
+static bool get_funcarg_table_name(FuncExpr *expr, int n, char *func_name, Oid *regclass, char **nspname, char **relname) {
+    Node *node;
+    Const *c;
 
     node = lfirst(list_nth_cell(expr->args, n));
     if (!IsA(node, Const))
@@ -87,16 +101,69 @@ static bool getarg_table_name(FuncExpr *expr, int n, char *func_name, Oid *regcl
         return false;
     }
 
-    tp = SearchSysCache1(RELOID, c->constvalue);
-    if (!HeapTupleIsValid(tp))
-        elog(ERROR, "cache lookup failed for relation %u", DatumGetObjectId(c->constvalue));
-    reltup = (Form_pg_class) GETSTRUCT(tp);
-    *relname = NameStr(reltup->relname);
-    *nspname = get_namespace_name_or_temp(reltup->relnamespace);
-
     if (regclass) *regclass = DatumGetObjectId(c->constvalue);
+    get_nspname_relname(DatumGetObjectId(c->constvalue), nspname, relname);
 
-    ReleaseSysCache(tp);
+    return true;
+}
+
+/*
+ * Returns reglcass
+ * based on the nth parameter to the function in expr.
+ *
+ * It must be a Const node of Regclass type.
+ */
+static bool get_funcarg_regclass(FuncExpr *expr, int n, char *func_name, Oid *regclass)
+{
+    Node *node;
+    Const *c;
+
+    node = lfirst(list_nth_cell(expr->args, n));
+    if (!IsA(node, Const))
+    {
+        ereport(WARNING, (errmsg("%s called with non-Const parameters", func_name)));
+        return false;
+    }
+
+    c = (Const *) node;
+    if (c->consttype != REGCLASSOID)
+    {
+        ereport(WARNING, (errmsg("%s called with non-regclass parameters", func_name)));
+        return false;
+    }
+
+    *regclass = DatumGetObjectId(c->constvalue);
+    return true;
+}
+
+/*
+ * Returns ArrayType
+ * based on the nth parameter to the function in expr.
+ *
+ * It must be a Const node of TEXT or TEXT[] type.
+ * If the former, we build an array with just that one element.
+ */
+static bool get_funcarg_text_or_textarray(FuncExpr *expr, int n, char *func_name, ArrayType **result)
+{
+    Node *node;
+    Const *c;
+
+    node = lfirst(list_nth_cell(expr->args, n));
+    if (!IsA(node, Const)) {
+        ereport(WARNING, (errmsg("%s called with non-Const parameters", func_name)));
+        return false;
+    }
+
+    c = (Const *) node;
+    if (c->consttype == TEXTOID) {
+        ArrayType *arr = construct_array_builtin(&c->constvalue, 1, TEXTOID);
+        *result = arr;
+    } else if (c->consttype == TEXTARRAYOID) {
+        *result = DatumGetArrayTypeP(c->constvalue);
+    } else {
+        ereport(WARNING, (errmsg("%s called with non-TEXT[] parameters", func_name)));
+        return false;
+    }
 
     return true;
 }
@@ -111,7 +178,7 @@ static bool getarg_table_name(FuncExpr *expr, int n, char *func_name, Oid *regcl
  * n - the nth arg (0-indexed)
  * func_name - the name of the user-facing func (for constructing error messages)
  */
-static bool getarg_cstring(FuncExpr *expr, int n, char *func_name, char **result)
+static bool get_funcarg_cstring(FuncExpr *expr, int n, char *func_name, char **result)
 {
     Node *node;
     Const *c;
@@ -194,49 +261,130 @@ static Query *build_query(char *sql, SupportRequestInlineInFrom *req, char *func
     return querytree;
 }
 
+// TODO: use a VLA here instead:
+static
+void appendKeys(StringInfo q, const char nsp[1], const char **keys, size_t nkeys) {
+    Assert(nkeys > 0);
+
+    appendStringInfo(q, "%1$s.%2$s", nsp, keys[0]);
+    for (size_t i = 1; i < nkeys; i++) {
+        appendStringInfo(q, ", %1$s.%2$s", nsp, keys[i]);
+    }
+}
+
+static
+void appendEquijoin(
+        StringInfo q,
+        const char left_nsp[1],
+        const char **left_keys,
+        const char right_nsp[1],
+        const char **right_keys,
+        size_t nkeys) { // TODO: vla
+    Assert(nkeys > 0);
+
+    appendStringInfo(q, "%1$s.%2$s = %3$s.%4$s", left_nsp, left_keys[0], right_nsp, right_keys[0]);
+    for (size_t i = 1; i < nkeys; i++) {
+        appendStringInfo(q, " AND %1$s.%2$s = %3$s.%4$s", left_nsp, left_keys[i], right_nsp, right_keys[i]);
+    }
+}
+
 
 /*
- * temporal_semijoin_sql - build SQL for semijoin query
+ * temporal_semijoin_sql_internal - build SQL for semijoin query
  */
 static void
-temporal_semijoin_sql(
-    char *left_schema,
-    char *left_table,
-    char *left_id_col,
-    char *left_valid_col,
-    char *right_schema,
-    char *right_table,
-    char *right_id_col,
-    char *right_valid_col,
+temporal_semijoin_sql_internal(
+    Oid left_regclass,
+    ArrayType *left_keys_ar,
+    const char left_valid_col[1],
+    Oid right_regclass,
+    ArrayType *right_keys_ar,
+    const char right_valid_col[1],
     char **result
 ) {
     StringInfoData q;
-    char *left_nsp_table_q;
-    char left_table_q[MAX_QUOTED_NAME_LEN];
-    char left_id_col_q[MAX_QUOTED_NAME_LEN];
-    char left_valid_col_q[MAX_QUOTED_NAME_LEN];
-    char *right_nsp_table_q;
-    char right_table_q[MAX_QUOTED_NAME_LEN];
-    char right_id_col_q[MAX_QUOTED_NAME_LEN];
-    char right_valid_col_q[MAX_QUOTED_NAME_LEN];
-    char *result_valid_col_q;    // TODO: parameterize this too (optionally)
-    char *subquery_alias;
+    char *left_nspname;
+    char *left_relname;
+    const char *left_nsp_rel_q;
+    const char *left_rel_q;
+    int left_nkeys;
+    Datum *left_keys;
+    bool *left_keys_isnull;
+    const char **left_keys_q;
+    const char *left_valid_col_q;
+    char *right_nspname;
+    char *right_relname;
+    const char *right_nsp_rel_q;
+    const char *right_rel_q;
+    int right_nkeys;
+    Datum *right_keys;
+    bool *right_keys_isnull;
+    const char **right_keys_q;
+    const char *right_valid_col_q;
+    const char *result_valid_col_q;
+    const char *subquery_alias;
 
-    left_nsp_table_q = quote_qualified_identifier(left_schema, left_table);
-    quoteOneName(left_table_q, left_table);
-    quoteOneName(left_id_col_q, left_id_col);
-    quoteOneName(left_valid_col_q, left_valid_col);
-    right_nsp_table_q = quote_qualified_identifier(right_schema, right_table);
-    quoteOneName(right_table_q, right_table);
-    quoteOneName(right_id_col_q, right_id_col);
-    quoteOneName(right_valid_col_q, right_valid_col);
+    if (ARR_NDIM(left_keys_ar) == 0)
+        ereport(ERROR, (errmsg("temporal_semijoin left_keys cannot be empty")));
+    if (ARR_NDIM(left_keys_ar) > 1)
+        ereport(ERROR, (errmsg("temporal_semijoin left_keys must have one dimension")));
+    if (ARR_ELEMTYPE(left_keys_ar) != TEXTOID)
+        ereport(ERROR, (errmsg("temporal_semijoin left_keys must have text elements")));
+    deconstruct_array_builtin(left_keys_ar, TEXTOID, &left_keys, &left_keys_isnull, &left_nkeys);
+
+    if (ARR_NDIM(right_keys_ar) == 0)
+        ereport(ERROR, (errmsg("temporal_semijoin right_keys cannot be empty")));
+    if (ARR_NDIM(right_keys_ar) > 1)
+        ereport(ERROR, (errmsg("temporal_semijoin right_keys must have one dimension")));
+    if (ARR_ELEMTYPE(right_keys_ar) != TEXTOID)
+        ereport(ERROR, (errmsg("temporal_semijoin right_keys must have text elements")));
+    deconstruct_array_builtin(right_keys_ar, TEXTOID, &right_keys, &right_keys_isnull, &right_nkeys);
+
+    if (left_nkeys != right_nkeys)
+        ereport(ERROR, (errmsg("temporal_semijoin left_keys and right_keys must be the same length")));
+
+    Assert(left_nkeys != 0);    // no ereport needed because of ARR_NDIM check above.
+
+    // Look up the schema and table names from the regclass.
+    // When we build the SQL below, we must always schema-qualify the table,
+    // otherwise we could refer to the wrong table.
+    // (By using a regclass parameter we have already leaned on Postgres
+    // to apply the search_path when casting from a string.
+    // Since we have the table's oid, we just have to not lose track of it.)
+    get_nspname_relname(left_regclass, &left_nspname, &left_relname);
+    get_nspname_relname(right_regclass, &right_nspname, &right_relname);
+
+    // Quote schema, table, and column names:
+    left_nsp_rel_q = quote_qualified_identifier(left_nspname, left_relname);
+    left_rel_q = quote_identifier(left_relname);
+    left_keys_q = malloc(sizeof(char *) * left_nkeys);
+    for (size_t i = 0; i < left_nkeys; i++) {
+        if (left_keys_isnull[i])
+            ereport(ERROR, (errmsg("temporal_semijoin left_keys can't contain nulls")));
+        left_keys_q[i] = quote_identifier(TextDatumGetCString(left_keys[i]));
+    }
+    left_valid_col_q = quote_identifier(left_valid_col);
+
+    // Quote schema, table, and column names:
+    right_nsp_rel_q = quote_qualified_identifier(right_nspname, right_relname);
+    right_rel_q = quote_identifier(right_relname);
+    right_keys_q = malloc(sizeof(char *) * right_nkeys);
+    for (size_t i = 0; i < right_nkeys; i++) {
+        if (right_keys_isnull[i])
+            ereport(ERROR, (errmsg("temporal_semijoin right_keys can't contain nulls")));
+        right_keys_q[i] = quote_identifier(TextDatumGetCString(right_keys[i]));
+    }
+    right_valid_col_q = quote_identifier(right_valid_col);
+
+    // It doesn't really matter what we call the result valid_at col,
+    // because for a SETOF RECORD function the caller must give a column definition list anyway.
+    // So just use the same name as the left table.
     result_valid_col_q = left_valid_col_q;
 
-    // TODO: When we let you select extra columns from the left_table,
-    // we will need to check for conflicts against those too.
-    if (strcmp("j", left_table) == 0 || strcmp("j", right_table) == 0)
+    // Choose an alias that doesn't conflict with either table name:
+    if (strcmp("j", left_relname) == 0 || strcmp("j", right_relname) == 0)
     {
-        if (strcmp("j1", left_table) == 0 || strcmp("j1", right_table) == 0)
+        if (strcmp("j1", left_relname) == 0 || strcmp("j1", right_relname) == 0)
             subquery_alias = "j2";
         else
             subquery_alias = "j1";
@@ -245,7 +393,7 @@ temporal_semijoin_sql(
         subquery_alias = "j";
 
     /*
-     * SELECT  a.id, UNNEST(multirange(a.valid_at) * j.valid_at) AS valid_at
+     * SELECT  a, UNNEST(multirange(a.valid_at) * j.valid_at) AS valid_at
      * FROM    public.a
      * JOIN (
      *   SELECT  b.id, range_agg(b.valid_at) AS valid_at
@@ -256,19 +404,67 @@ temporal_semijoin_sql(
      */
     initStringInfo(&q);
     appendStringInfo(&q,
-            "SELECT %2$s.%3$s, UNNEST(multirange(%2$s.%4$s) * %9$s.%8$s) AS %10$s\n"
+            "SELECT %2$s, UNNEST(multirange(%2$s.%3$s) * %4$s.%5$s) AS %6$s\n"
             "FROM %1$s\n"
             "JOIN (\n"
-            "  SELECT %6$s.%7$s, range_agg(%6$s.%8$s) AS %8$s\n"
-            "  FROM %5$s\n"
-            "  GROUP BY %6$s.%7$s\n"
-            ") AS %9$s\n"
-            "ON %2$s.%3$s = %9$s.%7$s AND %2$s.%4$s && %9$s.%8$s",
-            left_nsp_table_q, left_table_q, left_id_col_q, left_valid_col_q,
-            right_nsp_table_q, right_table_q, right_id_col_q, right_valid_col_q,
-            subquery_alias, result_valid_col_q);
+            "  SELECT ",
+            left_nsp_rel_q, left_rel_q, left_valid_col_q,
+            subquery_alias, right_valid_col_q, result_valid_col_q);
+
+    appendKeys(&q, right_rel_q, right_keys_q, left_nkeys);
+    appendStringInfo(&q, ", range_agg(%2$s.%3$s) AS %3$s\n"
+            "  FROM %1$s\n"
+            "  GROUP BY ",
+            right_nsp_rel_q, right_rel_q, right_valid_col_q);
+    appendKeys(&q, right_rel_q, right_keys_q, left_nkeys);
+
+    appendStringInfo(&q,
+            ") AS %1$s\n"
+            "ON ", subquery_alias);
+    appendEquijoin(&q, left_rel_q, left_keys_q, subquery_alias, right_keys_q, left_nkeys);
+    appendStringInfo(&q, " AND %1$s.%2$s && %3$s.%4$s",
+            left_rel_q, left_valid_col_q,
+            subquery_alias, right_valid_col_q);
 
     *result = q.data;
+}
+
+Datum
+temporal_semijoin_keys_sql(PG_FUNCTION_ARGS) {
+    Oid left_regclass = PG_GETARG_OID(0);
+    ArrayType *left_keys_ar = PG_GETARG_ARRAYTYPE_P(1);
+    char *left_valid_col = TextDatumGetCString(PG_GETARG_DATUM(2));
+    Oid right_regclass = PG_GETARG_OID(3);
+    ArrayType *right_keys_ar = PG_GETARG_ARRAYTYPE_P(4);
+    char *right_valid_col = TextDatumGetCString(PG_GETARG_DATUM(5));
+    char *sql;
+
+    temporal_semijoin_sql_internal(
+            left_regclass, left_keys_ar, left_valid_col,
+            right_regclass, right_keys_ar, right_valid_col,
+            &sql);
+
+    PG_RETURN_DATUM(CStringGetTextDatum(sql));
+}
+
+Datum
+temporal_semijoin_key_sql(PG_FUNCTION_ARGS) {
+    Oid left_regclass = PG_GETARG_OID(0);
+    Datum left_key = PG_GETARG_DATUM(1);
+    ArrayType *left_keys_ar = construct_array_builtin(&left_key, 1, TEXTOID);
+    char *left_valid_col = TextDatumGetCString(PG_GETARG_DATUM(2));
+    Oid right_regclass = PG_GETARG_OID(3);
+    Datum right_key = PG_GETARG_DATUM(4);
+    ArrayType *right_keys_ar = construct_array_builtin(&right_key, 1, TEXTOID);
+    char *right_valid_col = TextDatumGetCString(PG_GETARG_DATUM(5));
+    char *sql;
+
+    temporal_semijoin_sql_internal(
+            left_regclass, left_keys_ar, left_valid_col,
+            right_regclass, right_keys_ar, right_valid_col,
+            &sql);
+
+    PG_RETURN_DATUM(CStringGetTextDatum(sql));
 }
 
 /*
@@ -279,7 +475,8 @@ Datum
 noop_support(PG_FUNCTION_ARGS)
 {
     Node *rawreq = (Node *) PG_GETARG_POINTER(0);
-    ereport(NOTICE, (errmsg("noop_support %u", rawreq->type)));
+    if (IsA(rawreq, SupportRequestInlineInFrom))
+        ereport(NOTICE, (errmsg("noop_support")));
     PG_RETURN_POINTER(NULL);
 }
 
@@ -298,13 +495,11 @@ temporal_semijoin_support(PG_FUNCTION_ARGS)
     Node *rawreq = (Node *) PG_GETARG_POINTER(0);
     SupportRequestInlineInFrom *req;
     FuncExpr *expr;
-    char *left_schema;
-    char *left_table;
-    char *left_id_col;
+    Oid left_regclass;
+    ArrayType *left_keys_ar;
     char *left_valid_col;
-    char *right_schema;
-    char *right_table;
-    char *right_id_col;
+    Oid right_regclass;
+    ArrayType *right_keys_ar;
     char *right_valid_col;
     char *sql;
     Query *querytree;
@@ -323,20 +518,20 @@ temporal_semijoin_support(PG_FUNCTION_ARGS)
     }
 
     /*
-     * Extract strings from the func's arguments.
-     * They must all be Const and TEXT.
+     * Extract the func's arguments.
+     * They must all be Const and the right type.
      */
-    if (!getarg_table_name(expr, 0, "temporal_semijoin", NULL, &left_schema, &left_table))
+    if (!get_funcarg_regclass(expr, 0, "temporal_semijoin", &left_regclass))
         PG_RETURN_POINTER(NULL);
-    if (!getarg_cstring(expr, 1, "temporal_semijoin", &left_id_col))
+    if (!get_funcarg_text_or_textarray(expr, 1, "temporal_semijoin", &left_keys_ar))
         PG_RETURN_POINTER(NULL);
-    if (!getarg_cstring(expr, 2, "temporal_semijoin", &left_valid_col))
+    if (!get_funcarg_cstring(expr, 2, "temporal_semijoin", &left_valid_col))
         PG_RETURN_POINTER(NULL);
-    if (!getarg_table_name(expr, 3, "temporal_semijoin", NULL, &right_schema, &right_table))
+    if (!get_funcarg_regclass(expr, 3, "temporal_semijoin", &right_regclass))
         PG_RETURN_POINTER(NULL);
-    if (!getarg_cstring(expr, 4, "temporal_semijoin", &right_id_col))
+    if (!get_funcarg_text_or_textarray(expr, 4, "temporal_semijoin", &right_keys_ar))
         PG_RETURN_POINTER(NULL);
-    if (!getarg_cstring(expr, 5, "temporal_semijoin", &right_valid_col))
+    if (!get_funcarg_cstring(expr, 5, "temporal_semijoin", &right_valid_col))
         PG_RETURN_POINTER(NULL);
 
     /*
@@ -345,14 +540,12 @@ temporal_semijoin_support(PG_FUNCTION_ARGS)
      * as if it were inlining a SQL function
      * (see inline_set_returning_function in optimizer/util/clauses.c).
      */
-    temporal_semijoin_sql(
-            left_schema,
-            left_table,
-            left_id_col,
+    temporal_semijoin_sql_internal(
+            left_regclass,
+            left_keys_ar,
             left_valid_col,
-            right_schema,
-            right_table,
-            right_id_col,
+            right_regclass,
+            right_keys_ar,
             right_valid_col,
             &sql);
 
@@ -481,17 +674,17 @@ temporal_antijoin_support(PG_FUNCTION_ARGS)
      * Extract strings from the func's arguments.
      * They must all be Const and TEXT.
      */
-    if (!getarg_table_name(expr, 0, "temporal_antijoin", NULL, &left_schema, &left_table))
+    if (!get_funcarg_table_name(expr, 0, "temporal_antijoin", NULL, &left_schema, &left_table))
         PG_RETURN_POINTER(NULL);
-    if (!getarg_cstring(expr, 1, "temporal_antijoin", &left_id_col))
+    if (!get_funcarg_cstring(expr, 1, "temporal_antijoin", &left_id_col))
         PG_RETURN_POINTER(NULL);
-    if (!getarg_cstring(expr, 2, "temporal_antijoin", &left_valid_col))
+    if (!get_funcarg_cstring(expr, 2, "temporal_antijoin", &left_valid_col))
         PG_RETURN_POINTER(NULL);
-    if (!getarg_table_name(expr, 3, "temporal_antijoin", NULL, &right_schema, &right_table))
+    if (!get_funcarg_table_name(expr, 3, "temporal_antijoin", NULL, &right_schema, &right_table))
         PG_RETURN_POINTER(NULL);
-    if (!getarg_cstring(expr, 4, "temporal_antijoin", &right_id_col))
+    if (!get_funcarg_cstring(expr, 4, "temporal_antijoin", &right_id_col))
         PG_RETURN_POINTER(NULL);
-    if (!getarg_cstring(expr, 5, "temporal_antijoin", &right_valid_col))
+    if (!get_funcarg_cstring(expr, 5, "temporal_antijoin", &right_valid_col))
         PG_RETURN_POINTER(NULL);
 
     /*
@@ -706,17 +899,17 @@ temporal_outer_join_support(PG_FUNCTION_ARGS)
      * Extract strings from the func's arguments.
      * They must all be Const and TEXT.
      */
-    if (!getarg_table_name(expr, 0, "temporal_outer_join", &left_table_regclass, &left_schema, &left_table))
+    if (!get_funcarg_table_name(expr, 0, "temporal_outer_join", &left_table_regclass, &left_schema, &left_table))
         PG_RETURN_POINTER(NULL);
-    if (!getarg_cstring(expr, 1, "temporal_outer_join", &left_id_col))
+    if (!get_funcarg_cstring(expr, 1, "temporal_outer_join", &left_id_col))
         PG_RETURN_POINTER(NULL);
-    if (!getarg_cstring(expr, 2, "temporal_outer_join", &left_valid_col))
+    if (!get_funcarg_cstring(expr, 2, "temporal_outer_join", &left_valid_col))
         PG_RETURN_POINTER(NULL);
-    if (!getarg_table_name(expr, 3, "temporal_outer_join", NULL, &right_schema, &right_table))
+    if (!get_funcarg_table_name(expr, 3, "temporal_outer_join", NULL, &right_schema, &right_table))
         PG_RETURN_POINTER(NULL);
-    if (!getarg_cstring(expr, 4, "temporal_outer_join", &right_id_col))
+    if (!get_funcarg_cstring(expr, 4, "temporal_outer_join", &right_id_col))
         PG_RETURN_POINTER(NULL);
-    if (!getarg_cstring(expr, 5, "temporal_outer_join", &right_valid_col))
+    if (!get_funcarg_cstring(expr, 5, "temporal_outer_join", &right_valid_col))
         PG_RETURN_POINTER(NULL);
 
     /*
