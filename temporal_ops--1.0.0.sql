@@ -6,17 +6,17 @@
 CREATE OR REPLACE FUNCTION temporal_semijoin_support(INTERNAL)
 RETURNS INTERNAL
 AS 'temporal_ops', 'temporal_semijoin_support'
-LANGUAGE C;
+LANGUAGE C STRICT STABLE;
 
 CREATE OR REPLACE FUNCTION temporal_antijoin_support(INTERNAL)
 RETURNS INTERNAL
 AS 'temporal_ops', 'temporal_antijoin_support'
-LANGUAGE C;
+LANGUAGE C STRICT STABLE;
 
 CREATE OR REPLACE FUNCTION temporal_outer_join_support(INTERNAL)
 RETURNS INTERNAL
 AS 'temporal_ops', 'temporal_outer_join_support'
-LANGUAGE C;
+LANGUAGE C STRICT STABLE;
 
 /*
  * temporal_semijoin - semijoins left table+columns to right table+columns
