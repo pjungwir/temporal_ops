@@ -26,6 +26,14 @@ FROM		temporal_semijoin('a', 'id', 'valid_at', 'b', 'id', 'valid_at') AS t(a a, 
 SELECT	(t.a).*, valid_at
 FROM		temporal_semijoin('a', array['id'], 'valid_at', 'b', array['id'], 'valid_at') AS t(a a, valid_at int4range);
 
+-- Test with single-key implicit valid_at function:
+SELECT	(t.a).*, valid_at
+FROM		temporal_semijoin('a', 'id', 'b', 'id') AS t(a a, valid_at int4range);
+
+-- Test with multi-key implicit valid_at function:
+SELECT	(t.a).*, valid_at
+FROM		temporal_semijoin('a', array['id'], 'b', array['id']) AS t(a a, valid_at int4range);
+
 -- Qual is pushed down:
 INSERT INTO a SELECT 10, int4range(i, i+1) FROM generate_series(1,1000) s(i);
 CREATE INDEX idx_a_id ON a (id);

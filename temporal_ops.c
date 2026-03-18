@@ -461,6 +461,7 @@ temporal_semijoin_support(PG_FUNCTION_ARGS)
     Node *rawreq = (Node *) PG_GETARG_POINTER(0);
     SupportRequestInlineInFrom *req;
     FuncExpr *expr;
+    int right_args;
     Oid left_regclass;
     ArrayType *left_keys_ar;
     char *left_valid_col;
@@ -477,9 +478,12 @@ temporal_semijoin_support(PG_FUNCTION_ARGS)
     req = (SupportRequestInlineInFrom *) rawreq;
     expr = (FuncExpr *) req->rtfunc->funcexpr;
 
-    if (list_length(expr->args) != 6)
-    {
-        ereport(WARNING, (errmsg("temporal_semijoin called with %d args but expected 6", list_length(expr->args))));
+    if (list_length(expr->args) == 6) {
+        right_args = 3;
+    } else if (list_length(expr->args) == 4) {
+        right_args = 2;
+    } else {
+        ereport(WARNING, (errmsg("temporal_semijoin called with %d args but expected 4 or 6", list_length(expr->args))));
         PG_RETURN_POINTER(NULL);
     }
 
@@ -491,14 +495,22 @@ temporal_semijoin_support(PG_FUNCTION_ARGS)
         PG_RETURN_POINTER(NULL);
     if (!get_funcarg_text_or_textarray(expr, 1, "temporal_semijoin", &left_keys_ar))
         PG_RETURN_POINTER(NULL);
-    if (!get_funcarg_cstring(expr, 2, "temporal_semijoin", &left_valid_col))
+    if (list_length(expr->args) == 6) {
+        if (!get_funcarg_cstring(expr, 2, "temporal_semijoin", &left_valid_col))
+            PG_RETURN_POINTER(NULL);
+    } else {
+        left_valid_col = "valid_at";
+    }
+    if (!get_funcarg_regclass(expr, right_args, "temporal_semijoin", &right_regclass))
         PG_RETURN_POINTER(NULL);
-    if (!get_funcarg_regclass(expr, 3, "temporal_semijoin", &right_regclass))
+    if (!get_funcarg_text_or_textarray(expr, right_args + 1, "temporal_semijoin", &right_keys_ar))
         PG_RETURN_POINTER(NULL);
-    if (!get_funcarg_text_or_textarray(expr, 4, "temporal_semijoin", &right_keys_ar))
-        PG_RETURN_POINTER(NULL);
-    if (!get_funcarg_cstring(expr, 5, "temporal_semijoin", &right_valid_col))
-        PG_RETURN_POINTER(NULL);
+    if (list_length(expr->args) == 6) {
+        if (!get_funcarg_cstring(expr, 5, "temporal_semijoin", &right_valid_col))
+            PG_RETURN_POINTER(NULL);
+    } else {
+        right_valid_col = "valid_at";
+    }
 
     /*
      * Everything looks good. Build a Node tree for the query.
