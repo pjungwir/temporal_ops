@@ -200,6 +200,26 @@ ORDER BY (t.a).id, valid_at;
  (9,"[1,20)") | (9,"[1,20)")  | [1,20)
 (12 rows)
 
+-- Test with our text[] function:
+SELECT	*
+FROM		temporal_outer_join('a', array['id'], 'valid_at', 'b', array['id'], 'valid_at') AS t(a a, b b, valid_at int4range)
+ORDER BY (t.a).id, valid_at;
+      a       |       b       | valid_at 
+--------------+---------------+----------
+ (1,"[1,20)") |               | [1,5)
+ (1,"[1,20)") | (1,"[5,10)")  | [5,10)
+ (1,"[1,20)") |               | [10,15)
+ (1,"[1,20)") | (1,"[15,30)") | [15,20)
+ (2,"[1,20)") |               | [1,20)
+ (4,"[1,20)") |               | [1,20)
+ (6,"[1,20)") |               | [1,5)
+ (6,"[1,20)") | (6,"[5,10)")  | [5,10)
+ (6,"[1,20)") | (6,"[5,12)")  | [5,12)
+ (6,"[1,20)") |               | [12,20)
+ (7,"[5,20)") |               | [5,20)
+ (9,"[1,20)") | (9,"[1,20)")  | [1,20)
+(12 rows)
+
 -- Plan is good (qual pushed down, only one scan per table):
 INSERT INTO a SELECT 10, int4range(i, i+1) FROM generate_series(1,1000) s(i);
 CREATE INDEX idx_a_id ON a (id);

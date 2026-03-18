@@ -34,6 +34,12 @@ PG_FUNCTION_INFO_V1(temporal_antijoin_keys_sql);
 Datum temporal_antijoin_sql(PG_FUNCTION_ARGS);
 PG_FUNCTION_INFO_V1(temporal_antijoin_key_sql);
 
+Datum temporal_outer_join_sql(PG_FUNCTION_ARGS);
+PG_FUNCTION_INFO_V1(temporal_outer_join_keys_sql);
+
+Datum temporal_outer_join_sql(PG_FUNCTION_ARGS);
+PG_FUNCTION_INFO_V1(temporal_outer_join_key_sql);
+
 // support functions:
 
 Datum noop_support(PG_FUNCTION_ARGS);
@@ -47,28 +53,6 @@ PG_FUNCTION_INFO_V1(temporal_antijoin_support);
 
 Datum temporal_outer_join_support(PG_FUNCTION_ARGS);
 PG_FUNCTION_INFO_V1(temporal_outer_join_support);
-
-/*
- * quoteOneName --- safely quote a single SQL name
- *
- * buffer must be MAX_QUOTED_NAME_LEN long (includes room for \0)
- *
- * (Copied from ri_triggers.c.)
- */
-static void
-quoteOneName(char *buffer, const char *name)
-{
-    /* Rather than trying to be smart, just always quote it. */
-    *buffer++ = '"';
-    while (*name)
-    {
-        if (*name == '"')
-            *buffer++ = '"';
-        *buffer++ = *name++;
-    }
-    *buffer++ = '"';
-    *buffer = '\0';
-}
 
 /*
  * get_nspname_relname - Gets the schema and table name for a given table oid.
@@ -87,30 +71,6 @@ static void get_nspname_relname(Oid regclass, char **nspname, char **relname) {
     *relname = pstrdup(NameStr(reltup->relname));
 
     ReleaseSysCache(tp);
-}
-
-static bool get_funcarg_table_name(FuncExpr *expr, int n, char *func_name, Oid *regclass, char **nspname, char **relname) {
-    Node *node;
-    Const *c;
-
-    node = lfirst(list_nth_cell(expr->args, n));
-    if (!IsA(node, Const))
-    {
-        ereport(WARNING, (errmsg("%s called with non-Const parameters", func_name)));
-        return false;
-    }
-
-    c = (Const *) node;
-    if (c->consttype != REGCLASSOID)
-    {
-        ereport(WARNING, (errmsg("%s called with non-regclass parameters", func_name)));
-        return false;
-    }
-
-    if (regclass) *regclass = DatumGetObjectId(c->constvalue);
-    get_nspname_relname(DatumGetObjectId(c->constvalue), nspname, relname);
-
-    return true;
 }
 
 /*
@@ -860,7 +820,7 @@ get_qualified_type_name(Oid typid) {
 }
 
 static char *
-get_att_typname(Oid attrelid, char *attname) {
+get_att_typname(Oid attrelid, const char *attname) {
     AttrNumber attnum;
     Oid typid;
 
@@ -876,75 +836,129 @@ get_att_typname(Oid attrelid, char *attname) {
 }
 
 /*
- * temporal_outer_join_sql - build SQL for outer join query
- *
- * Identifier names should not be quoted.
+ * temporal_outer_join_sql_internal - build SQL for outer join query
  */
 static void
-temporal_outer_join_sql(
-    Oid left_table_oid,
-    char *left_schema,
-    char *left_table,
-    char *left_id_col,
-    char *left_valid_col,
-    char *right_schema,
-    char *right_table,
-    char *right_id_col,
-    char *right_valid_col,
+temporal_outer_join_sql_internal(
+    Oid left_regclass,
+    ArrayType *left_keys_ar,
+    const char left_valid_col[1],
+    Oid right_regclass,
+    ArrayType *right_keys_ar,
+    const char right_valid_col[1],
     char **result
 ) {
     StringInfoData q;
-    char *left_nsp_table_q;
-    char left_table_q[MAX_QUOTED_NAME_LEN];
-    char left_id_col_q[MAX_QUOTED_NAME_LEN];
-    char left_valid_col_q[MAX_QUOTED_NAME_LEN];
-    char *right_nsp_table_q;
-    char right_table_q[MAX_QUOTED_NAME_LEN];
-    char right_id_col_q[MAX_QUOTED_NAME_LEN];
-    char right_valid_col_q[MAX_QUOTED_NAME_LEN];
-    char *result_valid_col_q;
-    char *subquery1_alias;
-    char *subquery2_alias;
-    char *result_valid_col_type_q;
+    char *left_nspname;
+    char *left_relname;
+    const char *left_nsp_rel_q;
+    const char *left_rel_q;
+    int left_nkeys;
+    Datum *left_keys;
+    bool *left_keys_isnull;
+    const char **left_keys_q;
+    const char *left_valid_col_q;
+    char *right_nspname;
+    char *right_relname;
+    const char *right_nsp_rel_q;
+    const char *right_rel_q;
+    int right_nkeys;
+    Datum *right_keys;
+    bool *right_keys_isnull;
+    const char **right_keys_q;
+    const char *right_valid_col_q;
+    const char *result_valid_col_q;
+    const char *result_valid_col_type_q;
+    const char *subquery1_alias;
+    const char *subquery2_alias;
 
-    left_nsp_table_q = quote_qualified_identifier(left_schema, left_table);
-    quoteOneName(left_table_q, left_table);
-    quoteOneName(left_id_col_q, left_id_col);
-    quoteOneName(left_valid_col_q, left_valid_col);
-    right_nsp_table_q = quote_qualified_identifier(right_schema, right_table);
-    quoteOneName(right_table_q, right_table);
-    quoteOneName(right_id_col_q, right_id_col);
-    quoteOneName(right_valid_col_q, right_valid_col);
+    if (ARR_NDIM(left_keys_ar) == 0)
+        ereport(ERROR, (errmsg("temporal_antijoin left_keys cannot be empty")));
+    if (ARR_NDIM(left_keys_ar) > 1)
+        ereport(ERROR, (errmsg("temporal_antijoin left_keys must have one dimension")));
+    if (ARR_ELEMTYPE(left_keys_ar) != TEXTOID)
+        ereport(ERROR, (errmsg("temporal_antijoin left_keys must have text elements")));
+    deconstruct_array_builtin(left_keys_ar, TEXTOID, &left_keys, &left_keys_isnull, &left_nkeys);
+
+    if (ARR_NDIM(right_keys_ar) == 0)
+        ereport(ERROR, (errmsg("temporal_antijoin right_keys cannot be empty")));
+    if (ARR_NDIM(right_keys_ar) > 1)
+        ereport(ERROR, (errmsg("temporal_antijoin right_keys must have one dimension")));
+    if (ARR_ELEMTYPE(right_keys_ar) != TEXTOID)
+        ereport(ERROR, (errmsg("temporal_antijoin right_keys must have text elements")));
+    deconstruct_array_builtin(right_keys_ar, TEXTOID, &right_keys, &right_keys_isnull, &right_nkeys);
+
+    if (left_nkeys != right_nkeys)
+        ereport(ERROR, (errmsg("temporal_antijoin left_keys and right_keys must be the same length")));
+
+    Assert(left_nkeys != 0);    // no ereport needed because of ARR_NDIM check above.
+
+    // Look up the schema and table names from the regclass.
+    // When we build the SQL below, we must always schema-qualify the table,
+    // otherwise we could refer to the wrong table.
+    // (By using a regclass parameter we have already leaned on Postgres
+    // to apply the search_path when casting from a string.
+    // Since we have the table's oid, we just have to not lose track of it.)
+    get_nspname_relname(left_regclass, &left_nspname, &left_relname);
+    get_nspname_relname(right_regclass, &right_nspname, &right_relname);
+
+    // Quote schema, table, and column names:
+    left_nsp_rel_q = quote_qualified_identifier(left_nspname, left_relname);
+    left_rel_q = quote_identifier(left_relname);
+    left_keys_q = malloc(sizeof(char *) * left_nkeys);
+    for (size_t i = 0; i < left_nkeys; i++) {
+        if (left_keys_isnull[i])
+            ereport(ERROR, (errmsg("temporal_antijoin left_keys can't contain nulls")));
+        left_keys_q[i] = quote_identifier(TextDatumGetCString(left_keys[i]));
+    }
+    left_valid_col_q = quote_identifier(left_valid_col);
+
+    // Quote schema, table, and column names:
+    right_nsp_rel_q = quote_qualified_identifier(right_nspname, right_relname);
+    right_rel_q = quote_identifier(right_relname);
+    right_keys_q = malloc(sizeof(char *) * right_nkeys);
+    for (size_t i = 0; i < right_nkeys; i++) {
+        if (right_keys_isnull[i])
+            ereport(ERROR, (errmsg("temporal_antijoin right_keys can't contain nulls")));
+        right_keys_q[i] = quote_identifier(TextDatumGetCString(right_keys[i]));
+    }
+    right_valid_col_q = quote_identifier(right_valid_col);
+
+    // It doesn't really matter what we call the result valid_at col,
+    // because for a SETOF RECORD function the caller must give a column definition list anyway.
+    // So just use the same name as the left table.
     result_valid_col_q = left_valid_col_q;
-    result_valid_col_type_q = get_att_typname(left_table_oid, left_valid_col);
 
-    if (strcmp("ja", left_table) == 0 || strcmp("ja", right_table) == 0)
+    // We also need the *type* name so we can build the subquery column list.
+    result_valid_col_type_q = get_att_typname(left_regclass, left_valid_col);
+
+    if (strcmp("j1", left_relname) == 0 || strcmp("j1", right_relname) == 0)
     {
-        if (strcmp("ja1", left_table) == 0 || strcmp("ja1", right_table) == 0)
-            subquery1_alias = "ja2";
+        if (strcmp("j11", left_relname) == 0 || strcmp("j11", right_relname) == 0)
+            subquery1_alias = "j12";
         else
-            subquery1_alias = "ja1";
+            subquery1_alias = "j11";
     }
     else
-        subquery1_alias = "ja";
+        subquery1_alias = "j1";
 
-    if (strcmp("jb", left_table) == 0 || strcmp("jb", right_table) == 0)
+    if (strcmp("j2", left_relname) == 0 || strcmp("j2", right_relname) == 0)
     {
-        if (strcmp("jb1", left_table) == 0 || strcmp("jb1", right_table) == 0)
-            subquery2_alias = "jb2";
+        if (strcmp("j21", left_relname) == 0 || strcmp("j21", right_relname) == 0)
+            subquery2_alias = "j22";
         else
-            subquery2_alias = "jb1";
+            subquery2_alias = "j21";
     }
     else
-        subquery2_alias = "jb";
+        subquery2_alias = "j2";
 
     /*
      * SELECT  j1.a, j2.b, j2.valid_at
      * FROM    (
      *   SELECT  a, array_agg(ROW(b, COALESCE(a.valid_at * b.valid_at, a.valid_at))) AS b,
      *           range_agg(b.valid_at) AS valid_at
-     *   FROM    a
-     *   LEFT JOIN b
+     *   FROM    public.a
+     *   LEFT JOIN public.b
      *   ON      a.id = b.id AND a.valid_at && b.valid_at
      *   GROUP BY a
      * ) AS j1
@@ -954,31 +968,85 @@ temporal_outer_join_sql(
      *   SELECT NULL, UNNEST(multirange((j1.a).valid_at) - j1.valid_at)
      * ) AS j2 ON true
      * WHERE   NOT isempty((j1.a).valid_at)
-     * ORDER BY 1, 5;
      */
     initStringInfo(&q);
     appendStringInfo(&q,
-            "SELECT  %9$s.%2$s, %10$s.%6$s, %10$s.%11$s\n"
+            "SELECT  %7$s.%2$s, %8$s.%5$s, %8$s.%9$s\n"
             "FROM    (\n"
             "  SELECT  %2$s,\n"
-            "          array_agg(ROW(%6$s, COALESCE(%2$s.%4$s * %6$s.%8$s, %2$s.%4$s))) AS %6$s,\n"
-            "          range_agg(%6$s.%8$s) AS %8$s\n"
+            "          array_agg(ROW(%5$s, COALESCE(%2$s.%3$s * %5$s.%6$s, %2$s.%3$s))) AS %5$s,\n"
+            "          range_agg(%5$s.%6$s) AS %6$s\n"
             "  FROM    %1$s\n"
-            "  LEFT JOIN %5$s\n"
-            "  ON      %2$s.%3$s = %6$s.%7$s AND %2$s.%4$s && %6$s.%8$s\n"
-            "  GROUP BY %2$s\n"
-            ") AS %9$s\n"
+            "  LEFT JOIN %4$s\n"
+            "  ON ",
+            left_nsp_rel_q, left_rel_q, left_valid_col_q,
+            right_nsp_rel_q, right_rel_q, right_valid_col_q,
+            subquery1_alias, subquery2_alias, result_valid_col_q);
+    appendEquijoin(&q, left_rel_q, left_keys_q, right_rel_q, right_keys_q, left_nkeys);
+    appendStringInfo(&q,
+            " AND %1$s.%2$s && %3$s.%4$s\n"
+            "  GROUP BY %1$s\n"
+            ") AS %5$s\n",
+            left_rel_q, left_valid_col_q,
+            right_rel_q, right_valid_col_q,
+            subquery1_alias);
+    appendStringInfo(&q,
             "JOIN LATERAL (\n"
-            "  SELECT %6$s.%6$s, %6$s.%11$s FROM UNNEST(%9$s.%6$s) AS %6$s(%6$s %6$s, %11$s %12$s)\n"
+            "  SELECT %3$s.%3$s, %3$s.%7$s FROM UNNEST(%5$s.%3$s) AS %3$s(%3$s %3$s, %7$s %8$s)\n"
             "  UNION ALL\n"
-            "  SELECT NULL, UNNEST(multirange((%9$s.%2$s).%4$s) - %9$s.%8$s)\n"
-            ") AS %10$s ON true\n"
-            "WHERE   NOT isempty((%9$s.%2$s).%4$s)",
-            left_nsp_table_q, left_table_q, left_id_col_q, left_valid_col_q,
-            right_nsp_table_q, right_table_q, right_id_col_q, right_valid_col_q,
+            "  SELECT NULL, UNNEST(multirange((%5$s.%1$s).%2$s) - %5$s.%4$s)\n"
+            ") AS %6$s ON true\n"
+            "WHERE  NOT isempty((%5$s.%1$s).%2$s)\n",
+            left_rel_q, left_valid_col_q,
+            right_rel_q, right_valid_col_q,
             subquery1_alias, subquery2_alias, result_valid_col_q, result_valid_col_type_q);
 
     *result = q.data;
+}
+
+
+/*
+ * temporal_outer_join_keys_sql - build SQL for outer join query
+ */
+Datum
+temporal_outer_join_keys_sql(PG_FUNCTION_ARGS) {
+    Oid left_regclass = PG_GETARG_OID(0);
+    ArrayType *left_keys_ar = PG_GETARG_ARRAYTYPE_P(1);
+    char *left_valid_col = TextDatumGetCString(PG_GETARG_DATUM(2));
+    Oid right_regclass = PG_GETARG_OID(3);
+    ArrayType *right_keys_ar = PG_GETARG_ARRAYTYPE_P(4);
+    char *right_valid_col = TextDatumGetCString(PG_GETARG_DATUM(5));
+    char *sql;
+
+    temporal_outer_join_sql_internal(
+            left_regclass, left_keys_ar, left_valid_col,
+            right_regclass, right_keys_ar, right_valid_col,
+            &sql);
+
+    PG_RETURN_DATUM(CStringGetTextDatum(sql));
+}
+
+/*
+ * temporal_outer_join_key_sql - build SQL for outer join query
+ */
+Datum
+temporal_outer_join_key_sql(PG_FUNCTION_ARGS) {
+    Oid left_regclass = PG_GETARG_OID(0);
+    Datum left_key = PG_GETARG_DATUM(1);
+    ArrayType *left_keys_ar = construct_array_builtin(&left_key, 1, TEXTOID);
+    char *left_valid_col = TextDatumGetCString(PG_GETARG_DATUM(2));
+    Oid right_regclass = PG_GETARG_OID(3);
+    Datum right_key = PG_GETARG_DATUM(4);
+    ArrayType *right_keys_ar = construct_array_builtin(&right_key, 1, TEXTOID);
+    char *right_valid_col = TextDatumGetCString(PG_GETARG_DATUM(5));
+    char *sql;
+
+    temporal_outer_join_sql_internal(
+            left_regclass, left_keys_ar, left_valid_col,
+            right_regclass, right_keys_ar, right_valid_col,
+            &sql);
+
+    PG_RETURN_DATUM(CStringGetTextDatum(sql));
 }
 
 /*
@@ -990,14 +1058,11 @@ temporal_outer_join_support(PG_FUNCTION_ARGS)
     Node *rawreq = (Node *) PG_GETARG_POINTER(0);
     SupportRequestInlineInFrom *req;
     FuncExpr *expr;
-    Oid left_table_regclass;
-    char *left_schema;
-    char *left_table;
-    char *left_id_col;
+    Oid left_regclass;
+    ArrayType *left_keys_ar;
     char *left_valid_col;
-    char *right_schema;
-    char *right_table;
-    char *right_id_col;
+    Oid right_regclass;
+    ArrayType *right_keys_ar;
     char *right_valid_col;
     char *sql;
     Query *querytree;
@@ -1016,18 +1081,18 @@ temporal_outer_join_support(PG_FUNCTION_ARGS)
     }
 
     /*
-     * Extract strings from the func's arguments.
-     * They must all be Const and TEXT.
+     * Extract the func's arguments.
+     * They must all be Const and the right type.
      */
-    if (!get_funcarg_table_name(expr, 0, "temporal_outer_join", &left_table_regclass, &left_schema, &left_table))
+    if (!get_funcarg_regclass(expr, 0, "temporal_outer_join", &left_regclass))
         PG_RETURN_POINTER(NULL);
-    if (!get_funcarg_cstring(expr, 1, "temporal_outer_join", &left_id_col))
+    if (!get_funcarg_text_or_textarray(expr, 1, "temporal_outer_join", &left_keys_ar))
         PG_RETURN_POINTER(NULL);
     if (!get_funcarg_cstring(expr, 2, "temporal_outer_join", &left_valid_col))
         PG_RETURN_POINTER(NULL);
-    if (!get_funcarg_table_name(expr, 3, "temporal_outer_join", NULL, &right_schema, &right_table))
+    if (!get_funcarg_regclass(expr, 3, "temporal_outer_join", &right_regclass))
         PG_RETURN_POINTER(NULL);
-    if (!get_funcarg_cstring(expr, 4, "temporal_outer_join", &right_id_col))
+    if (!get_funcarg_text_or_textarray(expr, 4, "temporal_outer_join", &right_keys_ar))
         PG_RETURN_POINTER(NULL);
     if (!get_funcarg_cstring(expr, 5, "temporal_outer_join", &right_valid_col))
         PG_RETURN_POINTER(NULL);
@@ -1038,15 +1103,12 @@ temporal_outer_join_support(PG_FUNCTION_ARGS)
      * as if it were inlining a SQL function
      * (see inline_set_returning_function in optimizer/util/clauses.c).
      */
-    temporal_outer_join_sql(
-            left_table_regclass,
-            left_schema,
-            left_table,
-            left_id_col,
+    temporal_outer_join_sql_internal(
+            left_regclass,
+            left_keys_ar,
             left_valid_col,
-            right_schema,
-            right_table,
-            right_id_col,
+            right_regclass,
+            right_keys_ar,
             right_valid_col,
             &sql);
 
