@@ -11,13 +11,6 @@
 #include <utils/lsyscache.h>
 #include <utils/syscache.h>
 
-/*
- * Borrow this from util/adt/ri_triggers.c
- * since we do similar SQL-building to there:
- */
-#define MAX_QUOTED_NAME_LEN  (NAMEDATALEN*2+3)
-#define MAX_QUOTED_REL_NAME_LEN  (MAX_QUOTED_NAME_LEN*2)
-
 PG_MODULE_MAGIC;
 
 // sql generation:
