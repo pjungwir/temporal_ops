@@ -355,3 +355,39 @@ BEGIN
   RETURN QUERY EXECUTE q;
 END;
 $$ STABLE LEAKPROOF PARALLEL SAFE SUPPORT temporal_outer_join_support LANGUAGE plpgsql;
+
+/*
+ * Like single-key temporal_outer_join above, but assumes valid_at for application-time column names.
+ */
+CREATE OR REPLACE FUNCTION temporal_outer_join(
+  left_table regclass,
+  left_id_col text,
+  right_table regclass,
+  right_id_col text
+)
+RETURNS SETOF RECORD AS $$
+DECLARE
+  q TEXT := temporal_outer_join_sql(left_table, left_id_col, 'valid_at',
+                                    right_table, right_id_col, 'valid_at');
+BEGIN
+  RETURN QUERY EXECUTE q;
+END;
+$$ STABLE LEAKPROOF PARALLEL SAFE SUPPORT temporal_outer_join_support LANGUAGE plpgsql;
+
+/*
+ * Like multi-key temporal_outer_join above, but assumes valid_at for application-time column names.
+ */
+CREATE OR REPLACE FUNCTION temporal_outer_join(
+  left_table regclass,
+  left_id_cols text[],
+  right_table regclass,
+  right_id_cols text[]
+)
+RETURNS SETOF RECORD AS $$
+DECLARE
+  q TEXT := temporal_outer_join_sql(left_table, left_id_cols, 'valid_at',
+                                    right_table, right_id_cols, 'valid_at');
+BEGIN
+  RETURN QUERY EXECUTE q;
+END;
+$$ STABLE LEAKPROOF PARALLEL SAFE SUPPORT temporal_outer_join_support LANGUAGE plpgsql;

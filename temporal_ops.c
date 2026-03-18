@@ -1090,6 +1090,7 @@ temporal_outer_join_support(PG_FUNCTION_ARGS)
     char *right_valid_col;
     char *sql;
     Query *querytree;
+    int right_args;
 
     /* We only handle InlineInFrom support requests. */
     if (!IsA(rawreq, SupportRequestInlineInFrom))
@@ -1098,9 +1099,12 @@ temporal_outer_join_support(PG_FUNCTION_ARGS)
     req = (SupportRequestInlineInFrom *) rawreq;
     expr = (FuncExpr *) req->rtfunc->funcexpr;
 
-    if (list_length(expr->args) != 6)
-    {
-        ereport(WARNING, (errmsg("temporal_outer_join called with %d args but expected 6", list_length(expr->args))));
+    if (list_length(expr->args) == 6) {
+        right_args = 3;
+    } else if (list_length(expr->args) == 4) {
+        right_args = 2;
+    } else {
+        ereport(WARNING, (errmsg("temporal_outer_join called with %d args but expected 4 or 6", list_length(expr->args))));
         PG_RETURN_POINTER(NULL);
     }
 
@@ -1112,14 +1116,22 @@ temporal_outer_join_support(PG_FUNCTION_ARGS)
         PG_RETURN_POINTER(NULL);
     if (!get_funcarg_text_or_textarray(expr, 1, "temporal_outer_join", &left_keys_ar))
         PG_RETURN_POINTER(NULL);
-    if (!get_funcarg_cstring(expr, 2, "temporal_outer_join", &left_valid_col))
+    if (list_length(expr->args) == 6) {
+        if (!get_funcarg_cstring(expr, 2, "temporal_outer_join", &left_valid_col))
+            PG_RETURN_POINTER(NULL);
+    } else {
+        left_valid_col = "valid_at";
+    }
+    if (!get_funcarg_regclass(expr, right_args, "temporal_outer_join", &right_regclass))
         PG_RETURN_POINTER(NULL);
-    if (!get_funcarg_regclass(expr, 3, "temporal_outer_join", &right_regclass))
+    if (!get_funcarg_text_or_textarray(expr, right_args + 1, "temporal_outer_join", &right_keys_ar))
         PG_RETURN_POINTER(NULL);
-    if (!get_funcarg_text_or_textarray(expr, 4, "temporal_outer_join", &right_keys_ar))
-        PG_RETURN_POINTER(NULL);
-    if (!get_funcarg_cstring(expr, 5, "temporal_outer_join", &right_valid_col))
-        PG_RETURN_POINTER(NULL);
+    if (list_length(expr->args) == 6) {
+        if (!get_funcarg_cstring(expr, 5, "temporal_outer_join", &right_valid_col))
+            PG_RETURN_POINTER(NULL);
+    } else {
+        right_valid_col = "valid_at";
+    }
 
     /*
      * Everything looks good. Build a Node tree for the query.

@@ -115,6 +115,16 @@ SELECT	*
 FROM		temporal_outer_join('a', array['id'], 'valid_at', 'b', array['id'], 'valid_at') AS t(a a, b b, valid_at int4range)
 ORDER BY (t.a).id, valid_at;
 
+-- Test with single-key implicit valid_at function:
+SELECT	*
+FROM		temporal_outer_join('a', 'id', 'b', 'id') AS t(a a, b b, valid_at int4range)
+ORDER BY (t.a).id, valid_at;
+
+-- Test with multi-key implicit valid_at function:
+SELECT	*
+FROM		temporal_outer_join('a', array['id'], 'b', array['id']) AS t(a a, b b, valid_at int4range)
+ORDER BY (t.a).id, valid_at;
+
 -- Plan is good (qual pushed down, only one scan per table):
 INSERT INTO a SELECT 10, int4range(i, i+1) FROM generate_series(1,1000) s(i);
 CREATE INDEX idx_a_id ON a (id);
