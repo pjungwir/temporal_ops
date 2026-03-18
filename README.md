@@ -60,6 +60,37 @@ Takes an array of column names from each table to compare for equality, and assu
 `temporal_semijoin(left_table regclass, left_keys text[], left_valid_at text, right_table regclass, right_keys text[], right_valid_at text)`
 Takes an array of column names from each table to compare for equality, and takes the names of your valid time columns.
 
+### Antijoin
+
+There are several variations:
+
+`temporal_antijoin(left_table regclass, left_key text, right_table regclass, right_key text)` -
+Takes a single column name from each table to compare for equality, and assumes valid time is stored in columns named `valid_at`.
+
+`temporal_antijoin(left_table regclass, left_key text, left_valid_at text, right_table regclass, right_key text, right_valid_at text)`
+Takes a single column name from each table to compare for equality, and takes the names of your valid time columns.
+
+`temporal_antijoin(left_table regclass, left_keys text[], right_table regclass, right_keys text[])`
+Takes an array of column names from each table to compare for equality, and assumes valid time is stored in columns named `valid_at`. The two arrays must have the same number of elements. Each column in the left array is compared with the column in the corresponding position of the right array.
+
+`temporal_antijoin(left_table regclass, left_keys text[], left_valid_at text, right_table regclass, right_keys text[], right_valid_at text)`
+Takes an array of column names from each table to compare for equality, and takes the names of your valid time columns.
+
+### Outer Join
+
+There are several variations:
+
+`temporal_outer_join(left_table regclass, left_key text, right_table regclass, right_key text)` -
+Takes a single column name from each table to compare for equality, and assumes valid time is stored in columns named `valid_at`.
+
+`temporal_outer_join(left_table regclass, left_key text, left_valid_at text, right_table regclass, right_key text, right_valid_at text)`
+Takes a single column name from each table to compare for equality, and takes the names of your valid time columns.
+
+`temporal_outer_join(left_table regclass, left_keys text[], right_table regclass, right_keys text[])`
+Takes an array of column names from each table to compare for equality, and assumes valid time is stored in columns named `valid_at`. The two arrays must have the same number of elements. Each column in the left array is compared with the column in the corresponding position of the right array.
+
+`temporal_outer_join(left_table regclass, left_keys text[], left_valid_at text, right_table regclass, right_keys text[], right_valid_at text)`
+Takes an array of column names from each table to compare for equality, and takes the names of your valid time columns.
 
 ## Installation
 
