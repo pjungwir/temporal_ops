@@ -36,6 +36,34 @@ RETURNS INTERNAL
 AS 'temporal_ops', 'temporal_semijoin_support'
 LANGUAGE C STRICT STABLE;
 
+/*
+ * ********
+ * antijoin
+ * ********
+ */
+
+CREATE OR REPLACE FUNCTION temporal_antijoin_sql(
+  left_table regclass,
+  left_keys text[],
+  left_valid_at text,
+  right_table regclass,
+  right_keys text[],
+  right_valid_at text)
+RETURNS TEXT
+AS 'temporal_ops', 'temporal_antijoin_keys_sql'
+LANGUAGE C STRICT STABLE;
+
+CREATE OR REPLACE FUNCTION temporal_antijoin_sql(
+  left_table regclass,
+  left_key text,
+  left_valid_at text,
+  right_table regclass,
+  right_key text,
+  right_valid_at text)
+RETURNS TEXT
+AS 'temporal_ops', 'temporal_antijoin_key_sql'
+LANGUAGE C STRICT STABLE;
+
 CREATE OR REPLACE FUNCTION temporal_antijoin_support(INTERNAL)
 RETURNS INTERNAL
 AS 'temporal_ops', 'temporal_antijoin_support'
@@ -113,6 +141,23 @@ $$ STABLE LEAKPROOF PARALLEL SAFE SUPPORT temporal_semijoin_support LANGUAGE plp
 
 
 
+/*
+ * temporal_antijoin - antijoins left table+columns to right table+columns
+ *
+ * Assumes an equijoin on a single key column plus application-time columns.
+ *
+ * Returns records with the left-hand tuple and intersection application-time.
+ *
+ * Since this query returns SETOF RECORD,
+ * the caller must declare the names+types of the result.
+ * For example:
+ *
+ * SELECT (j.a).*, valid_at
+ * FROM temporal_antijoin(
+ *        'a', 'id', 'valid_at',
+ *        'b', 'a_id', 'valid_at')
+ *      AS j(a a, valid_at daterange)
+ */
 CREATE OR REPLACE FUNCTION temporal_antijoin(
   left_table regclass,
   left_id_col text,
@@ -123,29 +168,34 @@ CREATE OR REPLACE FUNCTION temporal_antijoin(
 )
 RETURNS SETOF RECORD AS $$
 DECLARE
-  subquery TEXT := 'j';
+  q TEXT := temporal_antijoin_sql(left_table, left_id_col, left_valid_col,
+                                  right_table, right_id_col, right_valid_col);
 BEGIN
-  IF left_table::text = 'j' OR right_table::text = 'j' THEN
-    subquery := 'j1';
-    IF left_table::text = 'j1' OR right_table::text = 'j1' THEN
-      subquery := 'j2';
-    END IF;
-  END IF;
-
-  RETURN QUERY EXECUTE format($j$
-    SELECT  %1$I.%2$I,
-            UNNEST(CASE WHEN %7$I.%6$I IS NULL THEN multirange(%1$I.%3$I)
-                        ELSE multirange(%1$I.%3$I) - %7$I.%3$I END) AS %3$I
-    FROM    %1$I
-    LEFT JOIN (
-      SELECT  %4$I.%5$I, range_agg(%4$I.%6$I) AS %6$I
-      FROM    %4$I
-      GROUP BY %4$I.%5$I
-    ) AS %7$I
-    ON %1$I.%2$I = %7$I.%5$I AND %1$I.%3$I && %7$I.%6$I;
-  $j$, left_table, left_id_col, left_valid_col, right_table, right_id_col, right_valid_col, subquery);
+  RETURN QUERY EXECUTE q;
 END;
 $$ STABLE LEAKPROOF PARALLEL SAFE SUPPORT temporal_antijoin_support LANGUAGE plpgsql;
+
+/*
+ * Like temporal_antijoin above, but takes text[] instead of text
+ * for the scalar key columns.
+ */
+CREATE OR REPLACE FUNCTION temporal_antijoin(
+  left_table regclass,
+  left_id_cols text[],
+  left_valid_col text,
+  right_table regclass,
+  right_id_cols text[],
+  right_valid_col text
+)
+RETURNS SETOF RECORD AS $$
+DECLARE
+  q TEXT := temporal_antijoin_sql(left_table, left_id_cols, left_valid_col,
+                                  right_table, right_id_cols, right_valid_col);
+BEGIN
+  RETURN QUERY EXECUTE q;
+END;
+$$ STABLE LEAKPROOF PARALLEL SAFE SUPPORT temporal_antijoin_support LANGUAGE plpgsql;
+
 
 CREATE OR REPLACE FUNCTION temporal_outer_join(
   left_table regclass,

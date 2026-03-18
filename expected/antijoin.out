@@ -21,17 +21,31 @@ WHERE   NOT isempty(a.valid_at);
 (7 rows)
 
 -- Test with our function:
-SELECT	*
-FROM		temporal_antijoin('a', 'id', 'valid_at', 'b', 'id', 'valid_at') AS t(id int, valid_at int4range);
- id | valid_at 
-----+----------
-  1 | [1,5)
-  1 | [10,15)
-  2 | [1,20)
-  4 | [1,20)
-  6 | [1,5)
-  6 | [12,20)
-  7 | [5,20)
+SELECT	(t.a).*, valid_at
+FROM		temporal_antijoin('a', 'id', 'valid_at', 'b', 'id', 'valid_at') AS t(a a, valid_at int4range);
+ id | valid_at | valid_at 
+----+----------+----------
+  1 | [1,20)   | [1,5)
+  1 | [1,20)   | [10,15)
+  2 | [1,20)   | [1,20)
+  4 | [1,20)   | [1,20)
+  6 | [1,20)   | [1,5)
+  6 | [1,20)   | [12,20)
+  7 | [5,20)   | [5,20)
+(7 rows)
+
+-- Test with our text[] function:
+SELECT	(t.a).*, valid_at
+FROM		temporal_antijoin('a', array['id'], 'valid_at', 'b', array['id'], 'valid_at') AS t(a a, valid_at int4range);
+ id | valid_at | valid_at 
+----+----------+----------
+  1 | [1,20)   | [1,5)
+  1 | [1,20)   | [10,15)
+  2 | [1,20)   | [1,20)
+  4 | [1,20)   | [1,20)
+  6 | [1,20)   | [1,5)
+  6 | [1,20)   | [12,20)
+  7 | [5,20)   | [5,20)
 (7 rows)
 
 -- Qual is pushed down:
@@ -39,21 +53,22 @@ INSERT INTO a SELECT 10, int4range(i, i+1) FROM generate_series(1,1000) s(i);
 CREATE INDEX idx_a_id ON a (id);
 CREATE INDEX idx_b_id ON b (id);
 ANALYZE a, b;
-EXPLAIN SELECT *
-FROM		temporal_antijoin('a', 'id', 'valid_at', 'b', 'id', 'valid_at') AS t(id int, valid_at int4range)
-WHERE   id = 1;
-                                  QUERY PLAN                                   
--------------------------------------------------------------------------------
- ProjectSet  (cost=0.15..9.84 rows=100 width=36)
-   ->  Nested Loop Left Join  (cost=0.15..9.32 rows=1 width=49)
-         Join Filter: (a.valid_at && (range_agg(b.valid_at)))
-         ->  Index Scan using idx_a_id on a  (cost=0.15..8.17 rows=1 width=17)
-               Index Cond: (id = 1)
-               Filter: (NOT isempty(valid_at))
-         ->  GroupAggregate  (cost=0.00..1.13 rows=1 width=36)
-               ->  Seq Scan on b  (cost=0.00..1.11 rows=2 width=17)
-                     Filter: (id = 1)
-(9 rows)
+EXPLAIN SELECT (t.a).*, valid_at
+FROM		temporal_antijoin('a', 'id', 'valid_at', 'b', 'id', 'valid_at') AS t(a a, valid_at int4range)
+WHERE   (t.a).id = 1;
+                                     QUERY PLAN                                      
+-------------------------------------------------------------------------------------
+ Subquery Scan on t  (cost=0.15..9.84 rows=100 width=68)
+   ->  ProjectSet  (cost=0.15..9.84 rows=100 width=73)
+         ->  Nested Loop Left Join  (cost=0.15..9.32 rows=1 width=86)
+               Join Filter: (a.valid_at && (range_agg(b.valid_at)))
+               ->  Index Scan using idx_a_id on a  (cost=0.15..8.17 rows=1 width=58)
+                     Index Cond: (id = 1)
+                     Filter: (NOT isempty(valid_at))
+               ->  GroupAggregate  (cost=0.00..1.13 rows=1 width=36)
+                     ->  Seq Scan on b  (cost=0.00..1.11 rows=2 width=17)
+                           Filter: (id = 1)
+(10 rows)
 
 DROP INDEX idx_a_id;
 DROP INDEX idx_b_id;
@@ -63,17 +78,17 @@ CREATE OR REPLACE FUNCTION temporal_antijoin_support(INTERNAL)
 RETURNS INTERNAL
 AS 'temporal_ops', 'noop_support'
 LANGUAGE C;
-SELECT	*
-FROM		temporal_antijoin('a', 'id', 'valid_at', 'b', 'id', 'valid_at') AS t(id int, valid_at int4range);
+SELECT	(t.a).*, valid_at
+FROM		temporal_antijoin('a', 'id', 'valid_at', 'b', 'id', 'valid_at') AS t(a a, valid_at int4range);
 NOTICE:  noop_support
- id | valid_at 
-----+----------
-  1 | [1,5)
-  1 | [10,15)
-  2 | [1,20)
-  4 | [1,20)
-  6 | [1,5)
-  6 | [12,20)
-  7 | [5,20)
+ id | valid_at | valid_at 
+----+----------+----------
+  1 | [1,20)   | [1,5)
+  1 | [1,20)   | [10,15)
+  2 | [1,20)   | [1,20)
+  4 | [1,20)   | [1,20)
+  6 | [1,20)   | [1,5)
+  6 | [1,20)   | [12,20)
+  7 | [5,20)   | [5,20)
 (7 rows)
 
